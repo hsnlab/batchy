@@ -1,0 +1,76 @@
+# Batchy
+#
+# Copyright (C) 2019 by its authors (See AUTHORS)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+import logging
+import time
+
+rounds = get_arg('rounds', 100, int)
+control_period = get_arg('control_period', 0.1, float)
+mode = get_arg('mode', 'RTC', str)
+CYCLES_PER_BATCH = get_arg('CYCLES_PER_BATCH', 1000, int)
+CYCLES_PER_PACKET = get_arg('CYCLES_PER_PACKET', 100, int)
+
+# Step 1: create worker
+w0 = batchy.add_worker('w0')
+
+# Step 2: add task to worker
+# could also write as:
+# t0 = batchy.add_task('task0', worker='w0', type='RTC')
+t0 = w0.add_task('task0', type=mode)
+# could also add a physical port queue
+# port = PMDPort(port_id=0, ...)
+# queue = QueueInc(port=port, qid=wid)
+# t0 = w0.add_task('task0', queue=queue)
+
+# Step 3: add modules to task, set internal pipeline
+r0 = t0.add_module(RandomSplit(gates=list(range(2)), drop_rate=0.0),
+                   type='ingress')
+bp0 = t0.add_module(Bypass(cycles_per_batch=CYCLES_PER_BATCH,
+                            cycles_per_packet=CYCLES_PER_PACKET),
+                    CYCLES_PER_BATCH / settings.BYPASS_RATIO,
+                    CYCLES_PER_PACKET / settings.BYPASS_RATIO)
+bp1 = t0.add_module(Bypass(cycles_per_batch=2 * CYCLES_PER_BATCH,
+                           cycles_per_packet=2 * CYCLES_PER_PACKET),
+                    2 * CYCLES_PER_BATCH / settings.BYPASS_RATIO,
+                    2 * CYCLES_PER_PACKET / settings.BYPASS_RATIO)
+
+r0.connect(bp0, ogate=0)
+r0.connect(bp1, ogate=1)
+
+# Step 4: add flows:
+batchy.add_flow(name='flow0', path=[{'task': t0, 'path':[r0, bp0]}],
+                delay_slo=22_000,
+                source_params={'rate_limit': {'packet': 2_000_000}})
+batchy.add_flow(name='flow1', path=[{'task': t0, 'path':[r0, bp1]}],
+                delay_slo=24_000,
+                source_params={'rate_limit': {'packet': 2_000_000}})
+
+# Step 5: add test traffic
+batchy.add_source(worker=w0)
+# or create a new worker for the sources
+#batchy.add_source()
+batchy.add_sink()
+
+# Step 6: set controller for worker
+t0.set_controller('FeasDirTaskController')
+
+# Step 7: run pipeline
+batchy.run(rounds, control_period)
+batchy.plot('statistics.png')
+
+#bess.resume_all()
+#bess.reset_all()

@@ -1,0 +1,305 @@
+# Batchy
+#
+# Copyright (C) 2019 by its authors (See AUTHORS)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+import binascii
+import socket
+import struct
+import scapy.all as scapy
+
+
+mode = get_arg('mode', 'RTC', str)
+rounds = get_arg('rounds', 100, int)
+control_period = get_arg('control_period', 0.1, float)
+
+acl = get_arg('acl', 'True', str)
+enable_acl = 'true' in acl.lower()
+nat = get_arg('nat', 'True', str)
+enable_nat = 'true' in nat.lower()
+
+# path of pcap file, empty uses internal generator
+src_pcap = get_arg('src_pcap', '', str)
+burst_size = get_arg('burst_size', 32, int)
+src_worker_num = get_arg('src_worker_num', 1, int)
+
+acl_module = globals().get(get_arg('acl_module', 'DPDKACL'))
+fib_size = get_arg('fib_size', 500, int)
+acl_size = get_arg('acl_size', 100, int)
+
+queue_size = get_arg('queue_size', settings.DEFAULT_QUEUE_SIZE, int)
+settings.DEFAULT_QUEUE_SIZE = queue_size
+
+backpressure = get_arg('backpressure', 'True', str)
+backpressure = 'true' in backpressure.lower()
+
+branch_num = get_arg('branch_num', 3, int)
+nhop_num = get_arg('nhop_num', 3, int)
+
+max_delay = get_arg('max_delay', 1_000_000, int)
+max_delay1 = get_arg('max_delay1', max_delay, int)
+
+controller = get_arg('controller', 'feasdir', str)
+
+# IPLookup
+# ip_t0 = get_arg('ip_t0', 0, int)
+# ip_t1 = get_arg('ip_t1', 0, int)
+ip_t0 = get_arg('ip_t0', 68.5, int)
+ip_t1 = get_arg('ip_t1', 27.5, int)
+
+# (DPDK)ACL
+# acl_t0 = get_arg('acl_t0', 1, int)
+# acl_t1 = get_arg('acl_t1', 1, int)
+acl_t0 = get_arg('acl_t0', 122.3, int)
+acl_t1 = get_arg('acl_t1', 30.4, int)
+
+# NAT
+# nat_t0 = 0 if enable_acl else get_arg('nat_t0', 1, int)
+# nat_t1 = 0 if enable_acl else get_arg('nat_t1', 1, int)
+nat_t0 = get_arg('nat_t0', 43.5, int)
+nat_t1 = get_arg('nat_t1', 21, int)
+
+# TTL
+ttl_t0 = 1 if not enable_acl and not enable_nat else 0
+ttl_t1 = 1 if not enable_acl and not enable_nat else 0
+
+def aton(ip): return socket.inet_aton(ip)
+
+
+def mac_from_str(s, mode='bytes'):
+    ret = binascii.unhexlify(s.replace(':', ''))
+    if mode == 'int':
+        ret = int.from_bytes(ret, byteorder='big')
+    return ret
+
+
+def gen_packet(proto, src_ip, dst_ip, src_port=10001, dst_port=10002,
+               src_mac='02:1e:67:9f:4d:ae', dst_mac='ae:34:2e:16:b8:cd',
+               vlan_tci=None):
+    eth = scapy.Ether(src=src_mac, dst=dst_mac)
+    ip = scapy.IP(src=src_ip, dst=dst_ip)
+    udp = proto(sport=src_port, dport=dst_port)
+    payload = 'helloworld'
+    if vlan_tci is None:
+        pkt = eth/ip/udp/payload
+    else:
+        dotq = scapy.Dot1Q(vlan=vlan_tci)
+        pkt = eth/dotq/ip/udp/payload
+    return bytes(pkt)
+
+
+def get_octets(seq, offset=11, last=0):
+    return (int(seq / 64516) + offset,
+            int(seq % 64516 / 254),
+            (seq % 254) + 1,
+            last)
+
+
+def get_ip(seq, offset=11, last=0):
+    return '.'.join(map(str, get_octets(seq, offset, last)))
+
+
+def gen_acl_rules(num_entries=128):
+    acl_rules = []
+    for i in range(num_entries):
+        acl_rules.append(
+            {'src_ip': f'{get_ip(i, offset=2)}/24',
+             'dst_ip': f'{get_ip(i, offset=2)}/24',
+             'drop': True})
+    return acl_rules
+
+
+def gen_synthetic_l3_rules(flow_params, fib_size, nhop_num):
+    fib = []
+    for i in range(fib_size - len(flow_params)):
+        entry = {
+            'prefix': get_ip(i, offset=100),
+            'prefixlen': 24,
+            'ogate': i % nhop_num,
+        }
+        fib.append(entry)
+    for flow in flow_params:
+        i = flow['id']
+        entry = {
+            'prefix': get_ip(i, offset=20),
+            'prefixlen': 24,
+            'ogate': i % nhop_num,
+        }
+        fib.append(entry)
+    return fib
+
+
+def gen_pcap_l3_rules(pcap, n_groups):
+    fib = []
+    stat = pcap.replace('.pcap', '-stat.txt')
+    from lib import create_l3_table as c_l3
+    for i, cidr in enumerate(c_l3.get_groups(stat, n_groups)):
+        prefix, prefixlen = cidr.split('/')
+        entry = {
+            'prefix': prefix,
+            'prefixlen': int(prefixlen),
+            'ogate': i,
+        }
+        fib.append(entry)
+    return fib
+
+
+flow_params = []
+for b in range(branch_num):
+    for n in range(nhop_num):
+        i = b * nhop_num + n
+        dmac = f'11:77:{":".join(["%02x" % x for x in get_octets(b, last=1)])}'
+        templates = [gen_packet(scapy.UDP,
+                                '10.0.0.1', get_ip(i, offset=20),
+                                dst_mac=dmac)]
+        new_flow = {
+            'name': f'flow_{i}',
+            'id': i,
+            'delay_slo':  max_delay,
+            'rate_slo': None,
+            'path': [],
+            'flow': None,
+            'source_params': {'limit': {'packet': int(1e9)},
+                              'templates': templates,
+                              'weight': 1}
+        }
+        flow_params.append(new_flow)
+
+if src_pcap:
+    fib = gen_pcap_l3_rules(src_pcap, nhop_num)
+else:
+    fib = gen_synthetic_l3_rules(flow_params, fib_size, nhop_num)
+
+# Step 1: create worker
+w0 = batchy.add_worker('w0')
+
+# Step 2: add task to worker
+t0 = w0.add_task('task0', type=mode, queue_size=queue_size, backpressure=backpressure)
+
+# Step 3: add modules to task, set internal pipeline
+type_check = t0.add_module(ExactMatch(name='type_check',
+                                      fields=[{'offset': 12, 'num_bytes': 2}]),
+                           type='ingress')
+type_check.module.add(fields=[{'value_bin': struct.pack("!H", 0x0800)}],
+                      gate=0)
+
+split = t0.add_module(ExactMatch(name='split',  # dst mac
+                                 fields=[{'offset': 0, 'num_bytes': 6}]))
+for b in range(branch_num):
+    mac_str = f'11:77:{":".join([f"{x:02x}" for x in get_octets(b, last=1)])}'
+    split.module.add(fields=[{'value_bin': mac_from_str(mac_str)}],
+                     gate=b)
+split.module.set_default_gate(gate=0)
+type_check.connect(split)
+
+if enable_acl:
+    acl_rules = [{'src_ip': '0.0.0.0/0',
+                  'dst_ip': '0.0.0.0/0',
+                  'ipproto': 17,
+                  'drop': False}] + gen_acl_rules(acl_size - 1)
+if enable_nat:
+    addr_pairs = [
+        {'int_range': {'start': '10.0.0.0', 'end': '10.0.0.255'},
+         'ext_range': {'start': '20.0.0.0', 'end': '20.0.0.255'}},
+    ]
+
+for vn in range(branch_num):
+    l3 = t0.add_module(IPLookup(name=f'L3_{vn}', max_rules=fib_size),
+                       T_0=ip_t0, T_1=ip_t1)
+    for entry in fib:
+        l3.module.add(prefix=entry['prefix'],
+                      prefix_len=entry['prefixlen'],
+                      gate=entry['ogate'])
+    split.connect(l3, ogate=vn)
+    for n in range(nhop_num):
+        fid = vn * nhop_num + n
+        ttl = t0.add_module(UpdateTTL(name=f'update_ttl_{fid}'),
+                            T_0=ttl_t0, T_1=ttl_t1)
+        src_mac = mac_from_str(f'aa:bb:bb:aa:{(fid % 256):02x}:dc', mode='int')
+        dst_mac = mac_from_str(f'ee:dd:dd:aa:01:{(fid % 256):02x}', mode='int')
+        mac = t0.add_module(Update(name=f'update_mac_{fid}',
+                                   fields=[{'offset': 6, 'size': 6, 'value': src_mac},
+                                           {'offset': 0, 'size': 6, 'value': dst_mac}]))
+        chk = t0.add_module(IPChecksum(name=f'ip_checksum_{fid}'))
+        flow_params[fid]['path'] = [type_check, split, l3]
+
+        last_mod = l3
+        last_gate = n
+        if enable_acl:
+            acl = t0.add_module(acl_module(name=f'ACL_{fid}', rules=acl_rules),
+                                T_0=acl_t0, T_1=acl_t1)
+            l3.connect(acl, ogate=n)
+            flow_params[fid]['path'].append(acl)
+            last_mod = acl
+            last_gate = 0
+
+        if enable_nat:
+            nat = t0.add_module(StaticNAT(name=f'NAT_{fid}', pairs=addr_pairs),
+                                T_0=nat_t0, T_1=nat_t1)
+            last_mod.connect(nat, last_gate)
+            flow_params[fid]['path'].append(nat)
+            last_mod = nat
+            last_gate = 1
+
+        last_mod.connect(ttl, last_gate)
+        ttl.connect(mac)
+        mac.connect(chk)
+        flow_params[fid]['path'].extend([ttl, mac, chk])
+
+# Step 4: add flows:
+for flow_param in flow_params:
+    new_flow = batchy.add_flow(name=flow_param['name'],
+                               path=[{'task': t0, 'path': flow_param['path']}],
+                               delay_slo=flow_param['delay_slo'],
+                               rate_slo=flow_param['rate_slo'],
+                               source_params=flow_param['source_params'])
+    flow_param['flow'] = new_flow
+flow_params[0]['flow'].D = max_delay1
+
+
+# Step 5: add traffic
+if not src_pcap:
+    for i in range(src_worker_num):
+        src_worker_name = f'src_{i}'
+        src_worker = batchy.add_worker(src_worker_name)
+        batchy.add_bulk_source(batchy.flows, src_worker, burst_size=burst_size)
+else:
+    src_worker = batchy.add_worker()
+    batchy.add_pcap_source(src_pcap, src_worker, t0)
+
+batchy.add_sink()
+
+# Step 6: set controller for worker
+t0.set_controller(batchy.resolve_task_controller(controller))
+
+# Step 7: run pipeline
+batchy.run(rounds, control_period)
+
+extras = ''
+if enable_acl:
+    extras += 'acl_'
+if enable_nat:
+    extras += 'nat_'
+if src_pcap.strip():
+    extras += 'pcap_'
+extras = extras.strip('_')
+
+outdir = '/tmp'
+basename = f'l2l3_{mode}_{controller}_b{branch_num}_n{nhop_num}_{extras}'
+batchy.dump(f'{outdir}/{basename}.txt')
+batchy.plot(f'{outdir}/{basename}.png')
+
+#bess.resume_all()
+#bess.reset_all()

@@ -1,0 +1,576 @@
+# Batchy
+#
+# Copyright (C) 2019 by its authors (See AUTHORS)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+import copy
+import ipaddress
+import json
+import random
+import re
+import socket
+import time
+import scapy.all as scapy
+from scipy import stats
+
+
+def aton(ip): return socket.inet_aton(ip)
+
+
+# make random numbers deterministic
+random.seed(0)
+
+max_batch  = int($max_batch!'32')
+# drop_rate  = float($drop_rate!'0.1')    # avoid deterministic input: randomly drop 10% of traffic
+# nhop_num   = int($nhop_num!'4')
+# prefix_num = int($prefix_num!'1000')  # random prefixes of random length
+# flow_num   = int($flow_num!'10')      # test traffic contains this many flows
+# bypass_wait= int($bypass_wait!'1000')
+meas_len   = int($meas_len!'5')       # run the module 'meas_len' seconds
+pkt_size   = int($pkt_size!'60')
+rate_limit = int($rate_limit!'100000')
+module     = str($module!'IPLookup')
+runs       = int($runs!'2')
+acl_file   = str($acl_file!'./conf/local/acl1_seed_1000.rules')
+out_file = str($out_file!'')
+linreg_stat = str($linreg_stat!'average')
+
+class Profiler(object):
+    def __init__(self, ogate=1, pkt_size=60):
+        self.ogate = ogate
+        self.pkt_size = pkt_size
+        self.packets = []
+        self.module = None
+
+    def ogate_num(self):
+        return self.ogate
+
+    def build(self):
+        # build the pipeline
+        return self.module
+
+    def gen_packets(self):
+        # generate test flows
+        raise NotImplementedError
+
+    def gen_packet(self, src_mac='02:1e:67:9f:4d:ae', dst_mac='06:16:3e:1b:72:32',
+                   src_ip='1.2.3.4', dst_ip='5.6.7.8',
+                   src_port=10001, dst_port=10002, proto=None):
+        if proto is None:
+            proto = scapy.UDP
+        eth = scapy.Ether(src=src_mac, dst=dst_mac)
+        ip = scapy.IP(src=src_ip, dst=dst_ip)
+        udp = proto(sport=src_port, dport=dst_port)
+        payload = ('hello' + '0123456789' * 200)[:self.pkt_size-len(eth/ip/udp)]
+        pkt = eth/ip/udp/payload
+        return bytes(pkt)
+
+
+class ExactMatchProfiler(Profiler):
+    def __init__(self, ogate, size, pkt_size=60):
+        super(ExactMatchProfiler, self).__init__(ogate=ogate, pkt_size=pkt_size)
+        self.size = size
+        self.module = ExactMatch(fields=[{'offset': 23, 'num_bytes': 1},
+                                         {'offset': 26, 'num_bytes': 4},
+                                         {'offset': 30, 'num_bytes': 4}])
+
+    def build(self):
+        assert self.size < 65534
+        em = self.module
+        for i in range(1, 255):
+            for j in range(1, 255):
+                num = i * 256 + j
+                for proto in (6, 17):  # 6: TCP, 17. UDP
+                    em.add(fields=[{'value_int': proto},
+                                   {'value_bin': aton('10.0.0.%d' % i)},
+                                   {'value_bin': aton('10.10.0.%d' % j)}],
+                           gate=num % self.ogate)
+                if num > self.size:
+                    return self.module
+
+    def gen_packets(self):
+        for i in range(1, 7):
+            pkt = self.gen_packet(src_ip='10.0.0.%d' % i,
+                                  dst_ip='10.10.0.%d' % i)
+            self.packets.append(pkt)
+        return self.packets
+
+
+class WildcardMatchProfiler(Profiler):
+    def __init__(self, ogate, size, pkt_size=60):
+        super(WildcardMatchProfiler, self).__init__(ogate=ogate, pkt_size=pkt_size)
+        self.size = size
+        self.module = WildcardMatch(fields=[{'offset': 26, 'num_bytes': 4},   # src ip
+                                            {'offset': 30, 'num_bytes': 4},   # dst ip
+                                            {'offset': 36, 'num_bytes': 2}])  # dst port
+
+    def build(self):
+        assert self.size < 65534
+        wm = self.module
+        for i in range(1, 255):
+            for j in range(1, 255):
+                num = i * 256 + j
+                wm.add(values=[{'value_bin': aton('10.0.0.%d' % i)},
+                               {'value_bin': aton('10.10.0.%d' % j)},
+                               {'value_int': 1000 + j}],
+                       gate=num % self.ogate,
+                       masks=[{'value_bin': aton('255.255.255.255')},
+                              {'value_bin': aton('255.255.255.255')},
+                              {'value_int': 0xffff}])
+                if num > self.size:
+                    return self.module
+
+    def gen_packets(self):
+        for i in range(1, 7):
+            pkt = self.gen_packet(src_ip='10.0.0.%d' % i,
+                                  dst_ip='10.10.0.%d' % i,
+                                  dst_port=1000 + i)
+            self.packets.append(pkt)
+        return self.packets
+
+
+class RandomSplitProfiler(Profiler):
+    def __init__(self, ogate, pkt_size=60):
+        super(RandomSplitProfiler, self).__init__(ogate=ogate, pkt_size=pkt_size)
+        self.module = RandomSplit(gates=list(range(self.ogate)), drop_rate=0.0)
+
+    def gen_packets(self):
+        self.packets = [self.gen_packet()]
+        return self.packets
+
+
+class HashLBProfiler(Profiler):
+    def __init__(self, ogate, mode='l4', pkt_size=60):
+        super(HashLBProfiler, self).__init__(ogate=ogate, pkt_size=pkt_size)
+        self.mode = mode
+        self.module = HashLB(gates=list(range(self.ogate)), mode=self.mode)
+
+    def gen_packets(self):
+        for i in range(1, 7):
+            pkt = self.gen_packet(src_ip='10.0.0.%d' % i,
+                                  dst_ip='10.10.0.%d' % i,
+                                  dst_port=1000 + i)
+            self.packets.append(pkt)
+        return self.packets
+
+
+class IPLookupProfiler(Profiler):
+    def __init__(self, prefix_num, flow_num, nhop_num, pkt_size=60):
+        super(IPLookupProfiler, self).__init__(ogate=nhop_num, pkt_size=pkt_size)
+        self.prefix = []
+        self.prefix_num = prefix_num
+        self.flow_num = flow_num
+        self.module = IPLookup(max_rules=self.prefix_num + 10, max_tbl8s=5000)
+        self.gen_prefix()
+
+    def gen_prefix(self):
+        # generate random prefixes
+        for i in range(self.prefix_num):
+            octets = [str(random.randint(0, 255)) for _ in range(4)]
+            plen = random.randint(1, 32)
+            addr = '.'.join(octets)
+            net = ipaddress.ip_network(u"%s/%s" % (addr, plen), strict=False)
+            self.prefix.append(net)
+        return self.prefix
+
+    def build(self):
+        # fill up IPLookup
+        for i in range(self.prefix_num - 1):
+            net = self.prefix[i]
+            out = random.randint(0, self.ogate - 1)
+            self.module.add(prefix=str(net.network_address),
+                            prefix_len=net.prefixlen,
+                            gate=out)
+        return self.module
+
+    def gen_packets(self):
+        # generate flows
+        for i in range(self.flow_num):
+            net = random.choice(self.prefix[:self.prefix_num-1])
+            dst = str(net[0])
+            self.packets.append(self.gen_packet(dst_ip=dst))
+        return self.packets
+
+
+class StaticNATProfiler(Profiler):
+    def __init__(self, rule_num=1000, pkt_size=60):
+        super(StaticNATProfiler, self).__init__(ogate=2, pkt_size=pkt_size)
+        self.rule_num = rule_num
+        self.gen_range_pairs()
+        self.module = StaticNAT(pairs=self.range_pairs)
+
+    def gen_range_pairs(self):
+        self.range_pairs = [
+            {'int_range': {'start': '10.0.0.0', 'end': '10.0.0.255'},
+             'ext_range': {'start': '10.10.0.0', 'end': '10.10.0.255'}}
+        ]
+        for i in range(self.rule_num - 1):
+            int_r = {'start': get_ip(i, offset=100, last=1),
+                     'end': get_ip(i, offset=100, last=10)}
+            ext_r = {'start': get_ip(i, offset=150, last=1),
+                     'end': get_ip(i, offset=150, last=10)}
+            self.range_pairs.append({'int_range': int_r, 'ext_range': ext_r})
+        return self.range_pairs
+
+    def gen_packets(self):
+        for i in range(1, 7):
+            pkt = self.gen_packet(src_ip='10.0.0.%d' % i,
+                                  dst_ip='10.10.0.%d' % i)
+            self.packets.append(pkt)
+        return self.packets
+
+
+class MACSwapProfiler(Profiler):
+    def __init__(self, pkt_size=60):
+        super(MACSwapProfiler, self).__init__(ogate=1, pkt_size=pkt_size)
+        self.module = MACSwap()
+
+    def gen_packets(self):
+        for b in range(1, 7):
+            mac_octets = ['%02x' % o for o in get_octets(b, last=1)]
+            mac_addr = '11:77:%s' % ':'.join(mac_octets)
+            pkt = self.gen_packet(dst_mac=mac_addr)
+            self.packets.append(pkt)
+        return self.packets
+
+
+class BypassProfiler(Profiler):
+    def __init__(self, bypass_wait, pkt_size=60):
+        super(BypassProfiler, self).__init__(ogate=1, pkt_size=pkt_size)
+        self.bypass_wait = bypass_wait
+        self.module = Bypass(cycles_per_batch=self.bypass_wait)
+
+    def gen_packets(self):
+        # generate 1 flow
+        self.packets.append(self.gen_packet())
+        return self.packets
+
+
+class ReplicateProfiler(Profiler):
+    def __init__(self, ogate, pkt_size=60):
+        super(ReplicateProfiler, self).__init__(ogate=ogate, pkt_size=pkt_size)
+        self.module = Replicate(gates=list(range(self.ogate)))
+
+    def build(self):
+        sink = Sink()
+        for i in range(1, self.ogate):
+            bess.connect_modules(self.module.name, sink.name, i, 0)
+        self.ogate = 1
+        return self.module
+
+    def gen_packets(self):
+        # generate 1 flow
+        self.packets.append(self.gen_packet())
+        return self.packets
+
+
+class ACLProfiler(Profiler):
+    def __init__(self, rule_num, flow_num=1000, pkt_size=60):
+        super(ACLProfiler, self).__init__(ogate=1, pkt_size=pkt_size)
+        assert rule_num <= 1000
+        self.rule_num = rule_num
+        self.flow_num = flow_num
+        self.acl_file = acl_file
+        self.rules = self.gen_rules()
+        # built-in ACL module does not support anything beyond UDP
+        for r in self.rules:
+            r['ipproto'] = 17
+
+    def gen_rules(self):
+        rules = []
+        regex = '%s%s%s' % (
+            '^@([/.\d]+)\s+([/.\d]+)\s+',            # ip addrs
+            '(\d+)\s+:\s+\d+\s+(\d+)\s+:\s+\d+\s+',  # ports
+            '([0-9A-Fa-fx]+)')                       # ip proto
+        pattern = re.compile(regex)
+        with open(self.acl_file) as rule_file:
+            for line in rule_file:
+                for cap in re.findall(pattern, line):
+                    rules.append({"src_ip": cap[0],
+                                  "dst_ip": cap[1],
+                                  "src_port": int(cap[2]),
+                                  "dst_port": int(cap[3]),
+                                  "ipproto": int(cap[4], 16),
+                                  "drop": False})
+                if len(rules) >= self.rule_num:
+                    break
+        rules.extend([{'src_ip': '0.0.0.0/0',
+                       'dst_ip': '0.0.0.0/0',
+                       'ipproto': proto,
+                       'drop': False} for proto in (17, 6)])
+        return rules
+
+    def build(self):
+        rules = copy.deepcopy(self.rules)
+        # remove ipproto
+        for r in rules:
+            del r['ipproto']
+        self.module = ACL(rules=rules)
+        return self.module
+
+    def gen_packets(self):
+        # generate flows
+        ipproto_dict = {6: scapy.TCP, 17: scapy.UDP}
+        for _ in range(self.flow_num):
+            rule = random.choice(self.rules)
+            src_ip = rule['src_ip'].split("/")[0]
+            dst_ip = rule['dst_ip'].split("/")[0]
+            ip_proto = ipproto_dict.get(rule['ipproto'], None)
+            self.packets.append(self.gen_packet(src_ip=src_ip,
+                                                dst_ip=dst_ip,
+                                                proto=ip_proto,
+                                                src_port=rule['src_port'],
+                                                dst_port=rule['dst_port']))
+        return self.packets
+
+
+class DPDKACLProfiler(ACLProfiler):
+    def __init__(self, rule_num, flow_num=1000, pkt_size=60):
+        super(DPDKACLProfiler, self).__init__(rule_num, flow_num, pkt_size)
+        self.module = DPDKACL(rules=self.rules)
+
+    def build(self):
+        return self.module
+
+
+def get_ip(seq, offset=11, last=0):
+    return '.'.join(map(str, get_octets(seq, offset, last)))
+
+
+def get_octets(seq, offset=11, last=0):
+    return (int(seq / 64516) + offset,
+            int(seq % 64516 / 254),
+            (seq % 254) + 1,
+            last)
+
+
+def build_profiler(module):
+    if module == 'ExactMatch':
+        ogate = 8
+        size = 1000
+        prof = ExactMatchProfiler(ogate, size, pkt_size)
+    elif module == 'WildcardMatch':
+        ogate = 8
+        size = 1000
+        prof = WildcardMatchProfiler(ogate, size, pkt_size)
+    elif module == 'RandomSplit':
+        ogate = 8
+        prof = RandomSplitProfiler(ogate, pkt_size)
+    elif module == 'HashLB':
+        ogate = 8
+        mode = 'l4'
+        prof = HashLBProfiler(ogate, mode, pkt_size)
+    elif module == 'IPLookup':
+        prefix_num = 15000
+        nhop_num = 8
+        flow_num = 16
+        prof = IPLookupProfiler(prefix_num, flow_num, nhop_num, pkt_size)
+    elif module == 'StaticNAT':
+        rule_num = 10
+        prof = StaticNATProfiler(rule_num, pkt_size)
+    elif module == 'Bypass':
+        bypass_wait = 10000
+        prof = BypassProfiler(bypass_wait, pkt_size)
+    elif module == 'Replicate':
+        ogate = 8
+        prof = ReplicateProfiler(ogate, pkt_size)
+    elif module == 'MACSwap':
+        prof = MACSwapProfiler(pkt_size)
+    elif module == 'ACL':
+        rule_num = 700
+        flow_num = 16
+        prof = ACLProfiler(rule_num, flow_num, pkt_size)
+    elif module == 'DPDKACL':
+        rule_num = 700
+        flow_num = 16
+        prof = DPDKACLProfiler(rule_num, flow_num, pkt_size)
+    else:
+        raise Exception("Unknown module: %s" % module)
+    return prof
+
+
+def do_measure(modul, *args):
+    result_list = []
+
+    bess.pause_all()
+
+    prof = build_profiler(modul)
+    module = prof.build()
+    packets = prof.gen_packets()
+
+    # build the measurement pipeline
+    # ingress
+    src = Source()
+    rw = Rewrite(templates=packets)
+
+    src -> rw -> Timestamp() -> module
+
+    # egress
+    m = BatchMeasure(latency_ns_resolution=5, latency_ns_max=1000000)
+    m -> Sink()
+    for i in range(prof.ogate_num()):
+        module:i -> m
+
+    # set the scheduler up
+    bess.add_tc('src_lim',
+                policy='rate_limit',
+                resource='count',
+                limit={'count': rate_limit})
+    src.attach_task(parent='src_lim')
+
+    bess.resume_all()
+
+    print('| batch_size | batches_bps | pkts_Mpps | bits_Mbps '
+          '| avg_ns | 1st_ns | med_ns | 75th_ns | 95th_ns | 99th_ns |')
+
+    for b in range(1, max_batch + 1):
+        src.set_burst(burst=b)
+
+        time.sleep(2)
+
+        m.get_summary(clear=True)
+        last_time = time.time()
+
+        time.sleep(meas_len)
+
+        ret = m.get_summary(clear=True,
+                            latency_percentiles=[1, 50, 75, 95, 99])
+
+        diff_ts = ret.timestamp - last_time
+        diff_pkts = ret.packets / diff_ts
+        diff_batches = ret.batch.count / diff_ts
+        diff_bits = ret.bits / diff_ts
+
+        results = (b,                                    # 0
+                   diff_batches,                         # 1
+                   diff_pkts / 1e6,                      # 2
+                   diff_bits / 1e6,                      # 3
+                   ret.latency.avg_ns,                   # 4
+                   ret.latency.percentile_values_ns[0],  # 5
+                   ret.latency.percentile_values_ns[1],  # 6
+                   ret.latency.percentile_values_ns[2],  # 7
+                   ret.latency.percentile_values_ns[3],  # 8
+                   ret.latency.percentile_values_ns[4]   # 9
+              )
+
+        print('| %d | %.3f | %.3f | %.3f | %.3f | %.3f | %.3f | %.3f | %.3f | %.3f |'
+              % results)
+
+        result_list.append(results)
+
+    bess.reset_all()
+
+    return result_list
+
+def print_result_table(results):
+    print('| batch_size | batches_bps | pkts_Mpps | bits_Mbps '
+          '| avg_ns | 1st_ns | med_ns | 75th_ns | 95th_ns | 99th_ns |')
+    for result in results:
+        print('| %d | %.3f | %.3f | %.3f | %.3f | %.3f | %.3f | %.3f | %.3f | %.3f |'
+              % tuple(result))
+
+def print_linreg_values(name, slope, intercept, r_value, p_value, std_err):
+    print("Linear regression for %s:"
+          "\tslope=%.3f\tintercept=%.3f\tr_value=%.3f\tp_value=%.3f\tstd_err=%.3f\t" %
+      (name, slope, intercept, r_value, p_value, std_err))
+
+def print_linreg_formula(name, intercept, slope):
+    print("%s(x) = %.3f + %.3f * x" % (name, intercept, slope))
+
+def print_common_linregs():
+    r = tuple(range(1, max_batch + 1))
+
+    # 1st / min
+    p1_q = [results_avg[b][5] for b in range(max_batch)]
+    slope, intercept, r_value, p_value, std_err = stats.linregress(r, p1_q)
+    print_linreg_values('1st', slope, intercept, r_value, p_value, std_err)
+    print_linreg_formula('min_q', intercept, slope)
+    print()
+
+    # average
+    avg_q = [results_avg[b][4] for b in range(max_batch)]
+    slope, intercept, r_value, p_value, std_err = stats.linregress(r, avg_q)
+    print_linreg_values('average', slope, intercept, r_value, p_value, std_err)
+    print_linreg_formula('avg_q', intercept, slope)
+    print()
+
+    # 95th
+    p95_q = [results_avg[b][8] for b in range(max_batch)]
+    slope, intercept, r_value, p_value, std_err = stats.linregress(r, p95_q)
+    print_linreg_values('95th', slope, intercept, r_value, p_value, std_err)
+    print_linreg_formula('p95_q', intercept, slope)
+    print()
+
+    # 99th / max
+    p99_q = [results_avg[b][9] for b in range(max_batch)]
+    slope, intercept, r_value, p_value, std_err = stats.linregress(r, p99_q)
+    print_linreg_values('99th', slope, intercept, r_value, p_value, std_err)
+    print_linreg_formula('max_q', intercept, slope)
+    print()
+
+def write_stat_to_out_file(module, stat, results_avg, max_batch=32):
+    columns = {
+        'average': 4,
+        'avg': 4,
+        'median': 6,
+        'min': 5,
+        'max': 9,
+        'p1': 5,
+        'p75': 7,
+        'p95': 8,
+        'p99': 9,
+        '1st': 5,
+        '75th': 7,
+        '95th': 8,
+        '99th': 8,
+    }
+    col = columns[stat.replace('_ns', '')]
+    q = [results_avg[b][col] for b in range(max_batch)]
+    r = range(1, max_batch + 1)
+    slope, intercept, r_value, p_value, std_err = stats.linregress(r, q)
+    stat_dict = {'T_1': slope, 'T_0': intercept, 'stat': stat}
+    print({module: stat_dict})
+    with open(out_file, 'a+') as f:
+        try:
+            data = json.load(f)
+        except ValueError:
+            data = {}
+        data[module] = stat_dict
+        f.seek(0)
+        f.truncate()
+        json.dump(data, f)
+
+##########
+
+bess.reset_all()
+
+results = [do_measure(module) for r in range(runs)]
+
+results_avg = []
+for b in range(max_batch):
+    tmp = [results[0][b][0]]  # batch size
+    for i in range(1, len(results[0][0])):
+        tmp.append(sum([results[r][b][i] for r in range(runs)]) / len(results))
+    results_avg.append(tmp)
+
+print('\n')
+print('Averaged results:')
+print_result_table(results_avg)
+print()
+
+print_common_linregs()
+
+if out_file:
+    write_stat_to_out_file(module, linreg_stat, results_avg, max_batch)

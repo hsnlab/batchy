@@ -1,0 +1,105 @@
+# Batchy
+#
+# Copyright (C) 2019 by its authors (See AUTHORS)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+
+mode = get_arg('mode', 'RTC', str)
+controller = get_arg('controller', 'projgrad', str)
+rounds = get_arg('rounds', 200, int)
+control_period = get_arg('control_period', 0.1, float)
+
+leaves = get_arg('leaves', 16, int)
+weight1 = 1
+
+cycles_per_batch = 10_000
+cycles_per_packet = 0
+
+cycles_per_batch1 = 1
+cycles_per_packet1 = 1
+
+delay_bound = 100_000_000
+packet_bound = 0  # no limit
+delay_bound1 = get_arg('delay_bound1', 32000, int)
+packet_bound1 = 1_000
+
+share = get_arg('share', 1, int)
+share1 = get_arg('share1', share, int)
+
+
+def rsplit_weight(num_leaves, weight1):
+    rsplit_weight = {i: 1.0 for i in range(1, num_leaves)}
+    rsplit_weight[0] = float(weight1)
+    sum_weight = num_leaves - 1 + weight1 or 1
+    rsplit_weight = {k: v/sum_weight for k, v in rsplit_weight.items()}
+    return rsplit_weight
+
+
+# Step 1: create worker
+w0 = batchy.add_worker('w0')
+
+# Step 2: add task to worker
+t0 = w0.add_task('task0', type=mode)
+
+# Step 3: add modules to task, set internal pipeline
+# Step 4: add flows:
+r0 = t0.add_module(WeightedRandomSplit(gates_weights=rsplit_weight(leaves, weight1),
+                                       drop_rate=0.0),
+                   type='ingress')
+bp0 = t0.add_module(Bypass(cycles_per_batch=cycles_per_batch1,
+                           cycles_per_packet=cycles_per_packet1),
+                    cycles_per_batch1 / settings.BYPASS_RATIO,
+                    cycles_per_packet1 / settings.BYPASS_RATIO)
+
+r0.connect(bp0, ogate=0)
+
+batchy.add_flow(name='flow0', path=[{'task': t0, 'path':[r0, bp0]}],
+                delay_slo=delay_bound1,
+                source_params={'rate_limit': {'packet': packet_bound1}})
+
+bps = []
+for i in range(1, leaves):
+    bp = t0.add_module(Bypass(cycles_per_batch=cycles_per_batch,
+                              cycles_per_packet=cycles_per_packet),
+                       cycles_per_batch / settings.BYPASS_RATIO,
+                       cycles_per_packet / settings.BYPASS_RATIO)
+    r0.connect(bp, ogate=i)
+    batchy.add_flow(name=f'flow{i:d}', path=[{'task': t0, 'path':[r0, bp]}],
+                    delay_slo=delay_bound,
+                    source_params={'rate_limit': {'packet': packet_bound}})
+    bps.append(bp)
+
+# Step 5: add test traffic
+batchy.add_source()
+batchy.add_sink()
+
+# Step 6: set controller for worker
+w0.set_task_controller(batchy.resolve_task_controller(controller))
+
+# override the task controller if share is given and mode is WFQ
+if mode == 'WFQ':
+    bp0.set_weight(share1)
+    for bp in bps:
+        bp.set_weight(share)
+
+# Step 7: run pipeline
+batchy.run(rounds, control_period)
+
+basename = f'rcstatic{leaves}_{mode}_{controller}'
+batchy.dump(f'/tmp/{basename}.txt')
+#batchy.plot(f'/tmp/{basename}.png')
+
+#bess.resume_all()
+#bess.reset_all()

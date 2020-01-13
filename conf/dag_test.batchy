@@ -1,0 +1,91 @@
+# Batchy
+#
+# Copyright (C) 2019 by its authors (See AUTHORS)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+mode = get_arg('mode', 'RTC', str)
+rounds = get_arg('rounds', 100, int)
+control_period = get_arg('control_period', 0.1, float)
+
+CYCLES_PER_BATCH = get_arg('CYCLES_PER_BATCH', 1000, int)
+CYCLES_PER_PACKET = get_arg('CYCLES_PER_PACKET', 100, int)
+
+controller = get_arg('controller', 'feasdir', str)
+
+
+# Step 1: create worker
+w0 = batchy.add_worker('w0')
+
+# Step 2: add task to worker
+t0 = w0.add_task('task0', type=mode)
+
+# Step 3: add modules to task, set internal pipeline
+r0 = t0.add_module(RandomSplit(gates=list(range(2)), drop_rate=0.0),
+                   type='ingress')
+bp00 = t0.add_module(Bypass(cycles_per_batch=CYCLES_PER_BATCH,
+                            cycles_per_packet=CYCLES_PER_PACKET),
+                     CYCLES_PER_BATCH / settings.BYPASS_RATIO,
+                     CYCLES_PER_PACKET / settings.BYPASS_RATIO)
+bp01 = t0.add_module(Bypass(cycles_per_batch=2 * CYCLES_PER_BATCH,
+                            cycles_per_packet=2 * CYCLES_PER_PACKET),
+                     2 * CYCLES_PER_BATCH / settings.BYPASS_RATIO,
+                     2 * CYCLES_PER_PACKET / settings.BYPASS_RATIO)
+m = t0.add_module(Merge())
+
+r0.connect(bp00, ogate=0)
+r0.connect(bp01, ogate=1)
+
+bp00.connect(m)
+bp01.connect(m)
+
+r1 = t0.add_module(RandomSplit(gates=list(range(2)), drop_rate=0.0))
+bp10 = t0.add_module(Bypass(cycles_per_batch=CYCLES_PER_BATCH,
+                            cycles_per_packet=CYCLES_PER_PACKET),
+                     CYCLES_PER_BATCH / settings.BYPASS_RATIO,
+                     CYCLES_PER_PACKET / settings.BYPASS_RATIO,
+                     type='egress')
+bp11 = t0.add_module(Bypass(cycles_per_batch=2 * CYCLES_PER_BATCH,
+                            cycles_per_packet=2 * CYCLES_PER_PACKET),
+                     2 * CYCLES_PER_BATCH / settings.BYPASS_RATIO,
+                     2 * CYCLES_PER_PACKET / settings.BYPASS_RATIO,
+                     type='egress')
+
+m.connect(r1)
+r1.connect(bp10, ogate=0)
+r1.connect(bp11, ogate=1)
+
+# Step 4: add flows:
+batchy.add_flow(name='flow0', path=[{'task': t0,
+                                     'path':[r0, bp00, m, r1, bp10]}],
+                delay_slo=25_000)
+batchy.add_flow(name='flow1', path=[{'task': t0,
+                                     'path':[r0, bp01, m, r1, bp11]}],
+                delay_slo=30_000)
+
+# Step 5: add test traffic
+batchy.add_source()
+batchy.add_sink()
+
+# Step 6: set controller for worker
+t0.set_controller(batchy.resolve_task_controller(controller))
+
+# Step 7: run pipeline
+batchy.run(rounds, control_period)
+
+batchy.plot('statistics.png')
+batchy.dump('statistics.txt')
+
+#bess.resume_all()
+#bess.reset_all()

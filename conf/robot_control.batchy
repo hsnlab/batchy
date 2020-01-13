@@ -1,0 +1,238 @@
+# Batchy
+#
+# Copyright (C) 2019 by its authors (See AUTHORS)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+import scapy.all as scapy
+import socket
+
+# robot control: s1->s2->R->M1->M2
+# bulk1: s1->s2->B1->M1->M2
+# bulk2: s1->B2->M2
+#
+#                          +---+
+#                       ---| R |---
+#                      /   +---+   \
+#                +---+/             \+---+
+#             ---|S2 |               |M1 |---
+#            /   +---+\             /+---+   \
+#      +---+/          \   +---+   /          \+---+
+#      |S1 |\           ---|B1 |---            |M2 |
+#      +---+ \             +---+              /+---+
+#             \                              /
+#              \                            /
+#               \          +---+           /
+#                ----------+B2 |-----------
+#                          +---+
+
+def aton(ip): return socket.inet_aton(ip)
+
+def get_id(id):
+    return id.to_bytes(4, byteorder='big')
+
+def gen_packet(proto, src_ip, dst_ip):
+    eth = scapy.Ether(src='02:1e:67:9f:4d:ae', dst='06:16:3e:1b:72:32')
+    ip = scapy.IP(src=src_ip, dst=dst_ip)
+    udp = proto(sport=10001, dport=10002)
+    payload = 'helloworld'
+    pkt = eth/ip/udp/payload
+    return bytes(pkt)
+
+
+mode = get_arg('mode', 'RTC', str)
+rounds = get_arg('rounds', 100, int)
+control_period = get_arg('control_period', 0.1, float)
+controller = get_arg('controller', 'projgrad', str)
+rate_slo = get_arg('rate_slo', -1, int)
+rate_slo = None if rate_slo < 0 else {'packet': rate_slo}
+delay_slo = get_arg('delay_slo', 15_000_000, int)  # for bearer 0, rest is proportional
+bulk_limit = get_arg('bulk_limit', settings.DEFAULT_RATE_LIMIT, int)   # cumulative rate limit on bulk traffic
+bulk_limit = {settings.DEFAULT_RATE_LIMIT_RESOURCE: bulk_limit}
+bulk_t0 = get_arg('bulk_t0', 2000, int)
+bulk_t1 = get_arg('bulk_t1', 1000, int)
+
+# whether pipeline is decomposed to ingress task and per-flow tasks
+# 0: whole task is one module
+# 1: ingress task(splitters) + per-flow tasks
+# 2: QoS task (with all QoS flows) and separate per-bulk tasks
+normalized = get_arg('normalized', 0, int)
+
+
+robot_ctrl_params = {
+    'cycles_per_batch': 100,
+    'cycles_per_packet': 10,
+    'rate_slo': rate_slo,
+    'delay_slo': delay_slo,
+    'source_params': {
+        'burst_size': 1,
+        'weight': 1,
+        'templates': [gen_packet(scapy.UDP, '10.0.0.1', '10.10.0.1')]},
+}
+
+ml1_params = {
+    'cycles_per_batch': bulk_t0,
+    'cycles_per_packet': bulk_t1,
+    'rate_slo': None,
+    'delay_slo': None,
+    'source_params': {
+        'weight': 1,
+        'templates': [gen_packet(scapy.UDP, '10.0.0.2', '10.20.0.1')]},
+}
+
+ml2_params = {
+    'cycles_per_batch': bulk_t0,
+    'cycles_per_packet': bulk_t1,
+    'rate_slo': None,
+    'delay_slo': None,
+    'source_params': {
+        'weight': 1,
+        'templates': [gen_packet(scapy.UDP, '10.0.0.3', '10.30.0.1')]},
+}
+
+
+# SET UP PIPELINE
+# Step 1: create worker
+w0 = batchy.add_worker('main')
+
+# Step 2: add tasks to worker
+if normalized == 0:
+    t0 = w0.add_task('main_task', type=mode)
+    t_rb= t0
+    t_ml1 = t0
+    t_ml2 = t0
+elif normalized == 1:
+    t0 = w0.add_task('ingress', type=mode)
+    t_rb= w0.add_task('robot', type=mode)
+    t_ml1 = w0.add_task('ml1', type=mode)
+    t_ml2 = w0.add_task('ml2', type=mode)
+else:
+    t0 = w0.add_task('ingress', type=mode)
+    t_rb= t0
+    t_ml1 = w0.add_task('ml1', type=mode)
+    t_ml2 = w0.add_task('ml2', type=mode)
+
+# Step 3: add modules to task, set internal pipeline
+r0 = t0.add_module(ExactMatch(fields=[{'offset':30, 'num_bytes':4}]),
+                   type='ingress')
+r0.module.add(fields=[{'value_bin':aton('10.10.0.1')}], gate=0)
+r0.module.add(fields=[{'value_bin':aton('10.20.0.1')}], gate=0)
+r0.module.add(fields=[{'value_bin':aton('10.30.0.1')}], gate=1)
+
+r1 = t0.add_module(ExactMatch(fields=[{'offset':30, 'num_bytes':4}]))
+r1.module.add(fields=[{'value_bin':aton('10.10.0.1')}], gate=0)
+r1.module.add(fields=[{'value_bin':aton('10.20.0.1')}], gate=1)
+r0.connect(r1, ogate=0)
+
+robot_ctrl = t_rb.add_module(Bypass(
+    name = 'robot_ctrl',
+    cycles_per_batch=robot_ctrl_params['cycles_per_batch'],
+    cycles_per_packet=robot_ctrl_params['cycles_per_packet']),
+                             robot_ctrl_params['cycles_per_batch'] / settings.BYPASS_RATIO,
+                             robot_ctrl_params['cycles_per_packet'] / settings.BYPASS_RATIO,
+                             type='ingress' if normalized == 1 else 'internal')
+
+r1.connect(robot_ctrl, ogate=0)
+
+md0_attrs = [{'name': 'id', 'size': 4, 'value_bin': get_id(0)}]
+md0 = t_rb.add_module(SetMetadata(name=f'setmd0', attrs=md0_attrs))
+robot_ctrl.connect(md0)
+
+ml_proc1 = t_ml1.add_module(Bypass(
+    name = 'ml_proc1',
+    cycles_per_batch=ml1_params['cycles_per_batch'],
+    cycles_per_packet=ml1_params['cycles_per_packet']),
+                            ml1_params['cycles_per_batch'] / settings.BYPASS_RATIO,
+                            ml1_params['cycles_per_packet'] / settings.BYPASS_RATIO,
+                            type='ingress' if normalized > 0 else 'internal')
+r1.connect(ml_proc1, ogate=1)
+
+md1_attrs = [{'name': 'id', 'size': 4, 'value_bin': get_id(1)}]
+md1 = t_ml1.add_module(SetMetadata(name=f'setmd1', attrs=md1_attrs))
+ml_proc1.connect(md1)
+
+ml_proc2 = t_ml2.add_module(Bypass(
+    name = 'ml_proc2',
+    cycles_per_batch=ml2_params['cycles_per_batch'],
+    cycles_per_packet=ml2_params['cycles_per_packet']),
+                            ml2_params['cycles_per_batch'] / settings.BYPASS_RATIO,
+                            ml2_params['cycles_per_packet'] / settings.BYPASS_RATIO,
+                            type='ingress' if normalized > 0 else 'internal')
+r0.connect(ml_proc2, ogate=1)
+
+md2_attrs = [{'name': 'id', 'size': 4, 'value_bin': get_id(2)}]
+md2 = t_ml2.add_module(SetMetadata(name=f'setmd2', attrs=md2_attrs))
+ml_proc2.connect(md2)
+
+m0 = t0.add_module(Merge())
+md0.connect(m0)
+md1.connect(m0)
+
+m1 = t0.add_module(Merge())
+m0.connect(m1)
+md2.connect(m1)
+
+split = t0.add_module(Split(name='sp', attribute='id', size=4))
+m1.connect(split)
+
+bp0 = t0.add_module(Bypass(name='bp0'))
+bp1 = t0.add_module(Bypass(name='bp1'))
+bp2 = t0.add_module(Bypass(name='bp2'))
+
+split.connect(bp0, ogate=0)
+split.connect(bp1, ogate=1)
+split.connect(bp2, ogate=2)
+
+# Step 4: add flows
+rb_path = [{'task': t0, 'path': [r0, r1]},
+           {'task': t_rb, 'path': [robot_ctrl, m0, m1, split, bp0]}] if normalized == 1 \
+           else [{'task': t0, 'path': [r0, r1, robot_ctrl, m0, m1, split, bp0]}]
+rb_f = batchy.add_flow(name='robot_flow', path=rb_path,
+                       delay_slo=robot_ctrl_params['delay_slo'],
+                       rate_slo=robot_ctrl_params['rate_slo'],
+                       source_params=robot_ctrl_params['source_params'])
+
+ml1_path = [{'task': t0, 'path': [r0, r1]},
+            {'task': t_ml1, 'path': [ml_proc1, m0, m1, split, bp1]}]
+ml1_f = batchy.add_flow(name='ml1_flow', path=ml1_path,
+                        source_params=ml1_params['source_params'])
+
+ml2_path = [{'task': t0, 'path': [r0]},
+            {'task': t_ml2, 'path': [ml_proc2, m1, split, bp2]}]
+ml2_f = batchy.add_flow(name='ml2_flow', path=ml2_path,
+                        source_params=ml2_params['source_params'])
+
+# Step 5: add test traffic
+src_worker_name = 'src'
+src_worker = batchy.add_worker(src_worker_name)
+src_worker.set_bulk_ratelimit(bulk_limit)
+batchy.add_source(src_worker)
+batchy.add_sink()
+
+# Step 6: set controller for worker
+w0.set_task_controller(batchy.resolve_task_controller(controller))
+#batchy.set_controller(batchy.resolve_controller('Greedy'))
+
+# Step 7: run pipeline
+batchy.run(rounds, control_period, 10)
+
+batchy.plot(f'/tmp/robot_ctrl_{controller}_norm_{normalized}.png',
+            modules=[robot_ctrl, ml_proc1, ml_proc2],
+            flows=[rb_f, ml1_f, ml2_f])
+batchy.dump(f'/tmp/robot_ctrl_{controller}_norm_{normalized}.txt',
+            modules=[robot_ctrl, ml_proc1, ml_proc2],
+            flows=[rb_f, ml1_f, ml2_f])
+
+#bess.resume_all()
+#bess.reset_all()

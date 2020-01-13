@@ -1,0 +1,78 @@
+# Batchy
+#
+# Copyright (C) 2019 by its authors (See AUTHORS)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+import binascii
+import itertools
+import scapy.all as scapy
+import socket
+import struct
+import time
+
+settings.DEFAULT_MEASURE_LATENCY_NS_MAX = 50_000_000
+settings.DEFAULT_MEASURE_LATENCY_NS_RESOLUTION = 10_000
+settings.MODULE_GET_STAT_METHOD = 'partial'
+
+mode = 'RTC'
+rounds = 20
+control_period = 3
+controller = get_arg('controller', 'projgradient', str)
+src_worker_num = 1
+
+fib_size = 5000
+user_num = 16
+bearer_num = 2
+bearer0_user = 1
+
+rate_seq = [10_000, 20_000, 5_000, 50_000, 15_000, 1_000]
+
+# rate-limits [bps] and delay bounds
+# rate-SLO for bearer 0, rest is proportional
+# if not set, then use weights to tune the traffic distribution
+rate_slo = rate_seq[0]
+delay_slo = 1_000_000  # for bearer 0, rest is proportional
+max_weight = 4
+bulk_limit = {settings.DEFAULT_RATE_LIMIT_RESOURCE: 2_000_000}
+
+# whether pipeline is decomposed to ingress task and per-flow tasks
+# 0: whole pipeline is one task
+# 1: ingress task(splitters) + per-flow tasks
+# 2: QoS task (with all QoS flows) and separate per-bulk tasks
+normalized = get_arg('normalized', 0, int)
+
+# bypass parameters
+t0_dl = 5000
+t1_dl =  100
+t0_ul = 5000
+t1_ul =  100
+
+
+pl = batchy.create_pipeline('MGW', **globals())
+globals().update(pl.get_vars())
+
+period = 1
+for rate in rate_seq:
+    print(f'Period {period}: updating bearer 0 rate: {rate} pps')
+    pl.update_qos_rate(limit=rate)
+    batchy.run(rounds, control_period, warmup=(period==1))
+    period += 1
+
+basename = f'mgw_vbr_{mode}_{controller}_norm_{normalized}'
+batchy.dump(f'/tmp/{basename}.txt')
+#batchy.plot(f'/tmp/{basename}.png')
+
+#bess.resume_all()
+#bess.reset_all()

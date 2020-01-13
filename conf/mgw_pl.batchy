@@ -1,0 +1,72 @@
+# Batchy
+#
+# Copyright (C) 2019 by its authors (See AUTHORS)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+import binascii
+import itertools
+import scapy.all as scapy
+import socket
+import struct
+
+mode = get_arg('mode', 'RTC', str)
+rounds = get_arg('rounds', 100, int)
+control_period = get_arg('control_period', 0.1, float)
+controller = get_arg('controller', 'projgradient', str)
+src_worker_num = get_arg('src_worker_num', 1, int)
+
+fib_size = get_arg('fib_size', 5000, int)
+user_num = get_arg('user_num', 3, int)
+bearer_num = get_arg('bearer_num', 2, int)   # bearers per user
+bearer0_user = get_arg('bearer0_user', user_num, int)   # users at bearer 0
+
+# rate-limits [bps] and delay bounds
+# rate-SLO for bearer 0, rest is proportional
+# if not set, then use weights to tune the traffic distribution
+rate_slo = get_arg('rate_slo', -1, int)
+delay_slo = get_arg('delay_slo', 15_000_000, int)  # for bearer 0, rest is proportional
+max_weight = get_arg('max_weight', 4, int)         # max weight for any
+bulk_limit = get_arg('bulk_limit', settings.DEFAULT_RATE_LIMIT, int)   # cumulative rate limit on bulk traffic
+bulk_limit = {settings.DEFAULT_RATE_LIMIT_RESOURCE: bulk_limit}
+
+# whether pipeline is decomposed to ingress task and per-flow tasks
+# 0: whole pipeline is one task
+# 1: ingress task(splitters) + per-flow tasks
+# 2: QoS task (with all QoS flows) and separate per-bulk tasks
+normalized = get_arg('normalized', 0, int)
+
+# bypass parameters
+t0_dl = get_arg('t0_dl', 2000, int)
+t1_dl = get_arg('t1_dl', 100, int)
+t0_ul = get_arg('t0_ul', 2000, int)
+t1_ul = get_arg('t1_ul', 100, int)
+
+# Step 1: create worker
+# Step 2: add task to worker
+# Step 3: add modules to task, set internal pipeline
+# Step 4: add flows:
+# Step 5: add test traffic
+# Step 6: set controller for worker
+pl = batchy.create_pipeline('MGW', **globals())
+globals().update(pl.get_vars())
+
+
+# Step 7: run pipeline
+batchy.run(rounds, control_period)
+batchy.dump(f'/tmp/mgw_{controller}_norm_{normalized}.txt')
+batchy.plot(f'/tmp/mgw_{controller}_norm_{normalized}.png')
+
+#bess.resume_all()
+#bess.reset_all()

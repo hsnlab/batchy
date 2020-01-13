@@ -1,0 +1,128 @@
+# Batchy
+#
+# Copyright (C) 2019 by its authors (See AUTHORS)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+import socket
+import scapy.all as scapy
+
+
+def aton(ip): return socket.inet_aton(ip)
+
+
+def gen_packet(dst_ip):
+    eth = scapy.Ether(src='ae:34:2e:16:b8:ba', dst='02:1e:67:9e:4d:be')
+    ip = scapy.IP(src='10.0.0.1', dst=dst_ip)
+    udp = scapy.UDP(sport=10001, dport=20001)
+    payload = 'helloworld'
+    pkt = eth/ip/udp/payload
+    return bytes(pkt)
+
+
+leaves = get_arg('leaves', 2, int)
+assert leaves <= 254
+mode = get_arg('mode', 'RTC', str)
+rounds = get_arg('rounds', 100, int)
+control_period = get_arg('control_period', 0.1, float)
+
+cycles_per_batch = get_arg('cycles_per_batch', 1000, int)
+cycles_per_packet = get_arg('cycles_per_packet', 100, int)
+cycles_per_batch1 = get_arg('cycles_per_batch1', cycles_per_batch, int)
+cycles_per_packet1 = get_arg('cycles_per_packet1', cycles_per_packet, int)
+
+delay_bound = get_arg('delay_bound', 5_000_000, int)
+packet_bound = get_arg('packet_bound', 50_000_000, int)
+delay_bound1 = get_arg('delay_bound1', delay_bound, int)
+packet_bound1 = get_arg('packet_bound1', packet_bound, int)
+share = get_arg('share', 1, int)  # wfq
+share1 = get_arg('share1', share, int)  # wfq
+
+controller = get_arg('controller', 'feasdir', str)
+controlled = 'true' in get_arg('controlled', 'true', str).lower()
+
+burstiness = get_arg('burstiness', 1, int)
+burstiness1 = get_arg('burstiness1', burstiness, int)
+
+# Step 1: create worker
+w0 = batchy.add_worker('w0')
+
+# Step 2: add task to worker
+t0 = w0.add_task('task0', type=mode)
+
+# Step 3: add modules to task, set internal pipeline
+# Step 4: add flows:
+r0 = t0.add_module(ExactMatch(fields=[{'offset': 30, 'num_bytes': 4}]),
+                   type='ingress')
+r0.module.add(fields=[{'value_bin': aton('20.0.0.1')}], gate=0)
+r0.module.set_default_gate(gate=0)
+
+bp0 = t0.add_module(Bypass(cycles_per_batch=cycles_per_batch1,
+                           cycles_per_packet=cycles_per_packet1),
+                    cycles_per_batch1 / settings.BYPASS_RATIO,
+                    cycles_per_packet1 / settings.BYPASS_RATIO,
+                    controlled=controlled)
+
+r0.connect(bp0, ogate=0)
+
+flow_rate_limit = {'packet': packet_bound1}
+batchy.add_flow(name='flow0', path=[{'task': t0, 'path':[r0, bp0]}],
+                delay_slo=delay_bound1,
+                rate_slo=flow_rate_limit,
+                source_params={'limit': flow_rate_limit,
+                               'templates': [gen_packet(f'20.0.0.1')],
+                               'burst': burstiness1,
+                              })
+
+flow_rate_limit = {'packet': packet_bound}
+bps = []
+for i in range(1, leaves):
+    r0.module.add(fields=[{'value_bin': aton(f'20.0.0.{i+1}')}], gate=i)
+    bp = t0.add_module(Bypass(cycles_per_batch=cycles_per_batch,
+                              cycles_per_packet=cycles_per_packet),
+                       cycles_per_batch / settings.BYPASS_RATIO,
+                       cycles_per_packet / settings.BYPASS_RATIO,
+                       controlled=controlled)
+    r0.connect(bp, ogate=i)
+    batchy.add_flow(name=f'flow{i:d}', path=[{'task': t0, 'path':[r0, bp]}],
+                    delay_slo=delay_bound,
+                    rate_slo=flow_rate_limit,
+                    source_params={'limit': flow_rate_limit,
+                                   'templates': [gen_packet(f'20.0.0.{i+1}')],
+                                   'burst': burstiness,
+                                  })
+    bps.append(bp)
+
+# Step 5: add test traffic
+batchy.add_multi_source(batchy.flows)
+batchy.add_sink()
+
+# Step 6: set controller for worker
+w0.set_task_controller(batchy.resolve_task_controller(controller))
+
+# override the task controller if share is given and mode is WFQ
+if mode == 'WFQ':
+    bp0.set_weight(share1)
+    for bp in bps:
+        bp.set_weight(share)
+
+# Step 7: run pipeline
+batchy.run(rounds, control_period)
+
+basename = f'simple_tree2_{mode}'
+batchy.dump(f'/tmp/{basename}.txt')
+batchy.plot(f'/tmp/{basename}.png')
+
+#bess.resume_all()
+#bess.reset_all()

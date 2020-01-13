@@ -1,0 +1,60 @@
+# Batchy
+#
+# Copyright (C) 2019 by its authors (See AUTHORS)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+leaves = get_arg('leaves', 2, int)
+weight1 = get_arg('weight1', 1, int)
+mode = get_arg('mode', 'RTC', str)
+rounds = get_arg('rounds', 100, int)
+control_period = get_arg('control_period', 0.1, float)
+
+cycles_per_batch = get_arg('cycles_per_batch', 1000, int)
+cycles_per_packet = get_arg('cycles_per_packet', 100, int)
+cycles_per_batch1 = get_arg('cycles_per_batch1', cycles_per_batch, int)
+cycles_per_packet1 = get_arg('cycles_per_packet1', cycles_per_packet, int)
+
+delay_bound = get_arg('delay_bound', 5_000_000, int)
+packet_bound = get_arg('packet_bound', 50_000_000, int)
+delay_bound1 = get_arg('delay_bound1', delay_bound, int)
+packet_bound1 = get_arg('packet_bound1', packet_bound, int)
+
+controller = get_arg('controller', 'feasdir', str)
+
+tree = get_arg('tree', 'simple', str)
+if 'simple' in (tree.lower()):
+    tree_type = 'SimpleTree'
+elif 'multi' in (tree.lower()):
+    tree_type = 'MultiStageTree'
+else:
+    raise Exception('Unknown tree type')
+
+# Step 1: create worker
+# Step 2: add task to worker
+# Step 3: add modules to task, set internal pipeline
+# Step 4: add flows:
+# Step 5: add test traffic
+# Step 6: set controller for worker
+pl = batchy.create_pipeline(tree_type, **globals())
+globals().update(pl.get_vars())
+
+# Step 7: run pipeline
+batchy.run(rounds, control_period)
+
+batchy.plot('statistics.png')
+batchy.dump('statistics.txt')
+
+#bess.resume_all()
+#bess.reset_all()

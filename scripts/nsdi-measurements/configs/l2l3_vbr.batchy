@@ -1,0 +1,76 @@
+# Batchy
+#
+# Copyright (C) 2019 by its authors (See AUTHORS)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+settings.DEFAULT_MEASURE_LATENCY_NS_MAX = 50_000_000
+settings.DEFAULT_MEASURE_LATENCY_NS_RESOLUTION = 10_000
+settings.MODULE_GET_STAT_METHOD = 'partial'
+
+mode = 'RTC'
+rounds = 20
+control_period = 3
+controller = get_arg('controller', 'projgrad', str)
+src_worker_num = 1
+burst_size = 32
+
+enable_acl = True
+enable_nat = True
+
+acl_module = globals().get(get_arg('acl_module', 'DPDKACL'))
+fib_size = 1000
+acl_size =  100
+
+branch_num = 4
+nhop_num = 8
+
+
+rate_seq = [100_000, 3_500_000, 200_000, 3_000_000, 10_000, 50_000]
+
+rate_slo = {'packet': rate_seq[0]}
+
+max_delay  = 1_000_000
+max_delay1 = max_delay
+
+
+ip_t0 = get_arg('ip_t0', 68.5, int)
+ip_t1 = get_arg('ip_t1', 27.5, int)
+
+acl_t0 = get_arg('acl_t0', 122.3, int)
+acl_t1 = get_arg('acl_t1', 30.4, int)
+
+nat_t0 = get_arg('nat_t0', 43.5, int)
+nat_t1 = get_arg('nat_t1', 21, int)
+
+ttl_t0 = 0
+ttl_t1 = 0
+
+
+pl = batchy.create_pipeline('L2L3', **globals())
+globals().update(pl.get_vars())
+
+period = 1
+for rate in rate_seq:
+    print(f'Period {period}: updating bulk source rate: {rate} pps')
+    pl.update_qos_rate(limit=rate)
+    batchy.run(rounds, control_period, warmup=(period==1))
+    period += 1
+
+basename = f'l2l3_vbr_{mode}_{controller}_b{branch_num}_n{nhop_num}_stat'
+batchy.dump(f'/tmp/{basename}.txt')
+#batchy.plot(f'/tmp/{basename}.png')
+
+#bess.resume_all()
+#bess.reset_all()

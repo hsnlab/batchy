@@ -1,0 +1,347 @@
+# Batchy
+#
+# Copyright (C) 2019 by its authors (See AUTHORS)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+import binascii
+import random
+import re
+import scapy.all as scapy
+import struct
+import pprint
+
+
+def mac_from_str(s, mode='bytes'):
+    ret = binascii.unhexlify(s.replace(':', ''))
+    if mode == 'int':
+        ret = int.from_bytes(ret, byteorder='big')
+    return ret
+
+
+def gen_packet(proto, src_ip, dst_ip, src_port=10001, dst_port=10002, ip_version=4):
+    ip_ethtypes = {4: 0x0800,
+                   6: 0x86DD}
+    eth = scapy.Ether(src='02:1e:67:9f:4d:ae', dst='ae:34:2e:16:b8:cd',
+                      type=ip_ethtypes[ip_version])
+    ip = scapy.IP(src=src_ip, dst=dst_ip)
+    udp = proto(sport=src_port, dport=dst_port)
+    payload = 'helloworld'
+    pkt = eth/ip/udp/payload
+    return bytes(pkt)
+
+
+def get_octets(seq, offset=11, last=0):
+    return (int(seq / 64516) + offset,
+            int(seq % 64516 / 254),
+            (seq % 254) + 1,
+            last)
+
+
+def populate_l3(module, num_entries=1000, num_ogates=3):
+    assert(num_entries < fibsize)
+    for i in range(num_entries):
+        pfix = '%d.%d.%d.%d' % get_octets(i, 21)
+        module.add(prefix=pfix, prefix_len=24,
+                   gate=random.randint(0, num_ogates - 1))
+
+
+def gen_acl_rules(num_entries=1024):
+    acl_rules = []
+    for i in range(num_entries):
+        src_pfix = '%d.%d.%d.%d' % get_octets(i, offset=21)
+        dst_pfix = '%d.%d.%d.%d' % get_octets(i, offset=121)
+        acl_rules.append(
+            {'src_ip': '%s/24' % src_pfix,
+             'dst_ip': '%s/24' % dst_pfix,
+             'drop': True})
+    return acl_rules
+
+
+mode = get_arg('mode', 'RTC', str)
+rounds = get_arg('rounds', 100, int)
+control_period = get_arg('control_period', 0.1, float)
+
+fibsize = get_arg('fibsize', 8000, int)
+acl_size = get_arg('acl_size', 1000, int)                 # number of entries in the ACLs
+burst_size = get_arg('burst_size', 32, int)               # number of packets to generate in each burst
+group_proc = get_arg('group_proc', 'True')
+src_worker_num = get_arg('src_worker_num', 1, int)        # number of workers that feed the pipeline with traffic
+extra_acl = get_arg('extra_acl', 'False')
+dmz_delay = get_arg('dmz_delay', 100_000, int)          # delay bound for the DMZ flow
+bulk_weight = get_arg('bulk_weight', 5, int)              # ratio of ingress/egress per dmz traffic
+
+acl_module = globals().get(get_arg('acl', 'DPDKACL'))
+
+ingress4_params = {
+    'delay_bound': 5_000_000,
+    'rate_limit': {'packet': int(1e9)},
+    'templates': [gen_packet(scapy.UDP, '10.0.0.3', '10.1.0.1')],
+    'cidr': '10.1.0.1/24',
+    'l3_ogate': 0,
+    'weight': bulk_weight,
+    'path': [],
+    'burst_size': burst_size,
+}
+
+egress4_params = {
+    'delay_bound': 5_000_000,
+    'rate_limit': {'packet': int(1e9)},
+    'templates': [gen_packet(scapy.UDP, '10.0.0.2', '10.0.1.1')],
+    'cidr': '10.0.1.1/24',
+    'l3_ogate': 1,
+    'weight': bulk_weight,
+    'path': [],
+    'burst_size': burst_size,
+}
+
+dmz4_params = {
+    # 'delay_bound': 100_000,
+    'delay_bound': dmz_delay,
+    'rate_limit': {'packet': int(1e9)},
+    'templates': [gen_packet(scapy.UDP, '10.0.0.1', '10.0.0.1')],
+    'cidr': '10.0.0.1/32',
+    'l3_ogate': 2,
+    'weight': 1,
+    'path': [],
+    # 'burst_size': 1,
+    'burst_size': burst_size,
+}
+
+
+ingress6_params = {
+    'delay_bound': 5_000_000,
+    'rate_limit': {'packet': int(1e9)},
+    'templates': [gen_packet(scapy.UDP, '10.0.0.3', '20.1.0.1',
+                             ip_version=6)],
+    'cidr': '20.1.0.1/24',
+    'l3_ogate': 0,
+    'weight': bulk_weight,
+    'path': [],
+    'burst_size': burst_size,
+}
+
+egress6_params = {
+    'delay_bound': 5_000_000,
+    'rate_limit': {'packet': int(1e9)},
+    'templates': [gen_packet(scapy.UDP, '10.0.0.2', '20.0.1.1',
+                             ip_version=6)],
+    'cidr': '20.0.1.1/24',
+    'l3_ogate': 1,
+    'weight': bulk_weight,
+    'path': [],
+    'burst_size': burst_size,
+}
+
+dmz6_params = {
+    # 'delay_bound': 100_000,
+    'delay_bound': dmz_delay,
+    'rate_limit': {'packet': int(1e9)},
+    'templates': [gen_packet(scapy.UDP, '10.0.0.1', '20.0.0.1',
+                             ip_version=6)],
+    'cidr': '20.0.0.1/32',
+    'l3_ogate': 2,
+    'weight': 1,
+    'path': [],
+    'burst_size': burst_size,
+}
+
+# SET UP PIPELINE
+# Step 1: create worker
+w0 = batchy.add_worker('w0')
+
+# Step 2: add task to worker
+t0 = w0.add_task('task0', type=mode)
+
+# Step 3: add modules to task, set internal pipeline
+# em_t0 = 1  # 117.8135
+# em_t1 = 1  # 19.1694
+em_t0 = 0  # 117.8135
+em_t1 = 0  # 19.1694
+
+ip_t0 = 0  # 214.683
+ip_t1 = 0  # 40.1546
+
+if acl_module == 'ACL':
+    acl_t0 = 1  # 380.9193
+    acl_t1 = 1  # 1008.9017
+else:
+    acl_t0 = 1  # 159.5575
+    acl_t1 = 1  # 38.9994
+
+
+mac_table = t0.add_module(ExactMatch(name='mac_table',
+                                     fields=[{'offset': 0, 'num_bytes': 6}]),
+                          type='ingress')
+mac_table.module.add(fields=[{'value_bin': mac_from_str('dd:dd:dd:dd:00:01')}],
+                     gate=0)
+mac_table.module.set_default_gate(gate=0)
+
+type_check = t0.add_module(ExactMatch(name='type_check',
+                                      fields=[{'offset': 12, 'num_bytes': 2}]),
+                           T_0=em_t0, T_1=em_t1)
+type_check.module.add(fields=[{'value_bin': struct.pack("!H", 0x0800)}],
+                      gate=0)
+type_check.module.add(fields=[{'value_bin': struct.pack("!H", 0x86DD)}],
+                      gate=1)
+type_check.module.set_default_gate(gate=0)
+mac_table.connect(type_check)
+
+common_path = [mac_table, type_check]
+
+
+l3_4 = t0.add_module(IPLookup(name='L3_4', max_rules=fibsize),
+                   T_0=ip_t0, T_1=ip_t1)
+l3_4.module.add(prefix='0.0.0.0', prefix_len=0, gate=dmz4_params['l3_ogate'])
+for name in ('%s4' % t for t in ('ingress', 'egress', 'dmz')):
+    params = globals().get('%s_params' % name)
+    pfix, pfixlen = params['cidr'].split('/')
+    l3_4.module.add(prefix=re.sub(r'\.[^.]+$', '.0', pfix),
+                  prefix_len=int(pfixlen),
+                  gate=params['l3_ogate'])
+populate_l3(l3_4.module, num_ogates=3, num_entries=1000)
+type_check.connect(l3_4)
+
+dmz4_acl_rules = [{'src_ip': '0.0.0.0/0',
+                   'dst_ip': dmz4_params['cidr'],
+                   'drop': False}] + gen_acl_rules(1000)
+dmz4_acl = t0.add_module(acl_module(name='DMZ4_ACL', rules=dmz4_acl_rules),
+                        T_0=acl_t0, T_1=acl_t1)
+l3_4.connect(dmz4_acl, ogate=dmz4_params['l3_ogate'])
+
+common_path4 = common_path + [l3_4]
+dmz4_params['path'] = common_path4.copy() + [dmz4_acl]
+ingress4_params['path'] = common_path4.copy()
+egress4_params['path'] = common_path4.copy()
+
+
+l3_6 = t0.add_module(IPLookup(name='L3_6', max_rules=fibsize),
+                   T_0=ip_t0, T_1=ip_t1)
+l3_6.module.add(prefix='0.0.0.0', prefix_len=0, gate=dmz6_params['l3_ogate'])
+for name in ('%s6' % t for t in ('ingress', 'egress', 'dmz')):
+    params = globals().get('%s_params' % name)
+    pfix, pfixlen = params['cidr'].split('/')
+    l3_6.module.add(prefix=re.sub(r'\.[^.]+$', '.0', pfix),
+                  prefix_len=int(pfixlen),
+                  gate=params['l3_ogate'])
+populate_l3(l3_6.module, num_ogates=3, num_entries=1000)
+type_check.connect(l3_6, ogate=1)
+
+dmz6_acl_rules = [{'src_ip': '0.0.0.0/0',
+                   'dst_ip': dmz6_params['cidr'],
+                   'drop': False}] + gen_acl_rules(1000)
+dmz6_acl = t0.add_module(acl_module(name='DMZ6_ACL', rules=dmz6_acl_rules),
+                        T_0=acl_t0, T_1=acl_t1)
+l3_6.connect(dmz6_acl, ogate=dmz6_params['l3_ogate'])
+
+common_path6 = common_path + [l3_6]
+dmz6_params['path'] = common_path6.copy() + [dmz6_acl]
+ingress6_params['path'] = common_path6.copy()
+egress6_params['path'] = common_path6.copy()
+
+
+extra_acl_enabled = 'true' in extra_acl.lower()
+group_proc_enabled = 'true' in group_proc.lower()
+
+gress_types = ['%s%s' % (t,v) for t in ('ingress', 'egress') for v in ('4', '6')]
+all_types = ['%s%s' % (t,v) for t in ('ingress', 'egress', 'dmz') for v in ('4', '6')]
+
+
+if extra_acl_enabled:
+    gress_acl_rules = gen_acl_rules(1000)
+    for name in gress_types:
+        params = globals().get('%s_params' % name)
+        dst_ip = params['cidr']
+        acl_rules = gress_acl_rules + [{'src_ip': '0.0.0.0/0',
+                                        'dst_ip': dst_ip,
+                                        'drop': False}]
+        acl = t0.add_module(acl_module(name='%s_ACL' % name.title(),
+                                       rules=acl_rules),
+                            T_0=acl_t0, T_1=acl_t1)
+        params['path'][-1].connect(acl, ogate=params['l3_ogate'])
+        params['path'].append(acl)
+
+if group_proc_enabled:
+    for name in all_types:
+        params = globals().get('%s_params' % name)
+        ttl = t0.add_module(UpdateTTL(name='update_ttl_%s' % name))
+        src_mac = mac_from_str('ae:34:2e:16:b8:cd', mode='int')
+        smac = t0.add_module(Update(name='update_smac_%s' % name,
+                                    fields=[{'offset': 6, 'size': 6,
+                                             'value': src_mac}]))
+        dst_mac = mac_from_str('ce:ce:ce:ce:00:01', mode='int')
+        dmac = t0.add_module(Update(name='update_dmac_%s' % name,
+                                    fields=[{'offset': 0, 'size': 6,
+                                             'value': dst_mac}]))
+        chk = t0.add_module(IPChecksum(name='ip_checksum_%s' % name))
+        ogate = 0
+        if not (extra_acl_enabled or 'dmz' in name):
+            ogate = params['l3_ogate']
+        params['path'][-1].connect(ttl, ogate=ogate)
+        ttl.connect(smac)
+        smac.connect(dmac)
+        dmac.connect(chk)
+        params['path'].extend([ttl, smac, dmac, chk])
+
+# append dummy-Bypass modules after L3 to differentiate flows on outports
+if not (group_proc_enabled or extra_acl_enabled):
+    for name in gress_types:
+        params = globals().get('%s_params' % name)
+        bp = t0.add_module(Bypass())
+        params['path'][-1].connect(bp, ogate=params['l3_ogate'])
+        params['path'].append(bp)
+
+# Step 4: add flows
+flows = []
+for name in all_types:
+    params = globals().get('%s_params' % name)
+    f = batchy.add_flow(name=name,
+                        path=[{'task': t0, 'path': params['path']}],
+                        delay_slo=params['delay_bound'],
+                        rate_slo=params['rate_limit'],
+                        source_params=params)
+    flows.append(f)
+
+# Step 5: add test traffic
+for i in range(src_worker_num):
+    src_worker_name = 'src_%d' % i
+    src_worker = batchy.add_worker(src_worker_name)
+    #batchy.add_source(src_worker)
+    batchy.add_bulk_source(flows, src_worker)
+
+batchy.add_sink()
+
+# Step 6: set controller for worker
+t0.set_controller('FeasDirTaskController')
+
+# Step 7: run pipeline
+batchy.erase_stat()
+batchy.run(rounds, control_period)
+batchy.plot('statistics_feas_dir.png')
+batchy.dump('statistics_feas_dir.txt')
+
+# t0.set_controller('NullTaskController')
+# batchy.erase_stat()
+# batchy.run(rounds, control_period)
+# batchy.plot('statistics_null.png')
+# batchy.dump('statistics_null.txt')
+
+# t0.set_controller('MaxTaskController')
+# batchy.erase_stat()
+# batchy.run(rounds, control_period)
+# batchy.plot('statistics_max.png')
+# batchy.dump('statistics_max.txt')
+
+#bess.resume_all()
+#bess.reset_all()

@@ -1,0 +1,73 @@
+# Batchy
+#
+# Copyright (C) 2019 by its authors (See AUTHORS)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+mode = get_arg('mode', 'RTC', str)
+rounds = get_arg('rounds', 100, int)
+control_period = get_arg('control_period', 0.1, float)
+
+acl=get_arg('acl', 'True', str)
+enable_acl = 'true' in acl.lower()
+nat=get_arg('nat', 'True', str)
+enable_nat = 'true' in nat.lower()
+
+burst_size = get_arg('burst_size', 32, int)
+src_worker_num = get_arg('src_worker_num', 1, int)
+
+acl_module = globals().get(get_arg('acl_module', 'DPDKACL'))
+fib_size = get_arg('fib_size', 500, int)
+acl_size = get_arg('acl_size', 100, int)
+
+branch_num = get_arg('branch_num', 3, int)
+nhop_num = get_arg('nhop_num', 3, int)
+
+max_delay  = get_arg('max_delay', 1_000_000, int)
+max_delay1 = get_arg('max_delay1', max_delay, int)
+
+controller = get_arg('controller', 'feasdir', str)
+
+
+# IPLookup
+ip_t0 = get_arg('ip_t0', 68.5, int)
+ip_t1 = get_arg('ip_t1', 27.5, int)
+# (DPDK)ACL
+acl_t0 = get_arg('acl_t0', 122.3, int)
+acl_t1 = get_arg('acl_t1', 30.4, int)
+# NAT
+nat_t0 = get_arg('nat_t0', 43.5, int)
+nat_t1 = get_arg('nat_t1', 21, int)
+# TTL
+ttl_t0 = 1 if not enable_acl and not enable_nat else 0
+ttl_t1 = 1 if not enable_acl and not enable_nat else 0
+
+# Step 1: create worker
+# Step 2: add task to worker
+# Step 3: add modules to task, set internal pipeline
+# Step 4: add flows:
+# Step 5: add test traffic
+# Step 6: set controller for worker
+pl = batchy.create_pipeline('L2L3', **globals())
+globals().update(pl.get_vars())
+
+
+# Step 7: run pipeline
+batchy.run(rounds, control_period)
+
+batchy.dump(f'{controller}_stat.txt')
+batchy.plot(f'{controller}_stat.png')
+
+#bess.resume_all()
+#bess.reset_all()

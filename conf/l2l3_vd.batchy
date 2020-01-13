@@ -1,0 +1,72 @@
+# Batchy
+#
+# Copyright (C) 2019 by its authors (See AUTHORS)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+mode = 'RTC'
+rounds = 20
+control_period = 2
+controller = get_arg('controller', 'projgrad', str)
+src_worker_num = 1
+burst_size = 32
+
+enable_acl = True
+enable_nat = True
+
+acl_module = globals().get(get_arg('acl_module', 'DPDKACL'))
+fib_size = 1000
+acl_size =  100
+
+branch_num = 4
+nhop_num = 8
+
+
+delay_seq = [150_000, 100_000, 200_000, 300_000, 125_000, 60_000]
+
+max_delay  = get_arg('max_delay', delay_seq[0], int)
+max_delay1 = max_delay
+rate_slo = {'packet': 10_000}
+
+ip_t0 = get_arg('ip_t0', 68.5, int)
+ip_t1 = get_arg('ip_t1', 27.5, int)
+
+acl_t0 = get_arg('acl_t0', 122.3, int)
+acl_t1 = get_arg('acl_t1', 30.4, int)
+
+nat_t0 = get_arg('nat_t0', 43.5, int)
+nat_t1 = get_arg('nat_t1', 21, int)
+
+ttl_t0 = 0
+ttl_t1 = 0
+
+
+pl = batchy.create_pipeline('L2L3', **globals())
+globals().update(pl.get_vars())
+
+period = 1
+for delay in delay_seq:
+    print(f'Period {period}: updating flow delay: {delay} ns')
+
+    for f in batchy.flows:
+        f.D = delay
+    batchy.run(rounds, control_period, warmup=(period==1))
+    period += 1
+
+basename = f'l2l3_vd_{mode}_{controller}_b{branch_num}_n{nhop_num}_stat'
+batchy.dump(f'/tmp/{basename}.txt')
+batchy.plot(f'/tmp/{basename}.png')
+
+#bess.resume_all()
+#bess.reset_all()
