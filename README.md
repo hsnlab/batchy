@@ -217,10 +217,12 @@ Done.
 
 After the run Batchy dumps results to `/tmp/simple_pipeline_stats.txt` and plots a figure of control values, flow delays, and flow packet rates to `/tmp/simple_pipeline_stats.png`.
 
+### Run our measurements
+To easily recreate some of our measurements, we packed our NSDI measurements with ready-to-run shell scripts. For details, see [scripts/nsdi-measurements](scripts/nsdi-measurements).
 
 ## Caveats and Limitations
 
-Batchy is an experimental software with numerous limitations. Some of these are:
+Batchy is an experimental software with limitations. Some of these are:
 
 * tasks are not handled (in most cases 1 task/worker is used)
 * by default implicit decision of configurable module, i.e. batchyness metric
