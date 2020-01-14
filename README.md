@@ -5,8 +5,6 @@
 
 ## Overview
 
-*Disclaimer: Batchy is currently heavily work in progress!*
-
 Batchy is a a scheduler for run-to-completion packet processing engines, which uses controlled queuing to efficiently reconstruct fragmented batches in accordance with strict service-level objectives (SLOs).
 
 Batchy comprises:
@@ -99,7 +97,7 @@ worker0 = batchy.add_worker(worker_name)
 ```python
 task0 = worker0.add_task(task_name, type=task_type)
 ```
-Supported types are: `'RTC'`, `'WFQ'`. Type-mixing is not supported.
+Supported types are: `'RTC'` and `'WFQ'`. Type-mixing is not supported.
 
 #### 4. Add modules to task, set internal pipeline
 ```python
@@ -116,10 +114,21 @@ new_flow = batchy.add_flow(name=flow_name,
 ```
 
 #### 6. Add test traffic
+
+* Built-in traffic generator
 ```python
 batchy.add_source()
 batchy.add_sink()
 ```
+
+* PCAP-replay
+Supported modes are `'replicate'` and `'tcpreplay'`. Tcpreplay relies on the external tool `tcpreplay`and has a very limited throughput. Replicate uses a large Queue module to store packets and a Replicate module to re-add a freash-copy of the packet leaving the traffic generator. This method requires large amount of memory, but it provides a good throughput.
+```python
+batchy.add_pcap_source(source_pcap, worker, task, mode='replicate', ts_offset=None)
+batchy.add_sink()
+```
+
+A [helper script](scripts/create_pcap_stats.py) is available to populate L3 lookup module tables. See the [l2l3 config](conf/l2l3.batchy) as an example.
 
 #### 7. Set controllers
 * Set Task controller
