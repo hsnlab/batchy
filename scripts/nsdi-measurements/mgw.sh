@@ -37,7 +37,7 @@ function run_mgw_scenario {
     local args="rounds=$ROUNDS,controller=$controller,mode=$mode,"
     args+="bearer_num=$bearer_num,user_num=$user_num,bearer0_user=$bearer0_user,"
     args+="delay_slo=$delay_slo,normalized=$normalized"
-    $BATCHYPY -r -l $LOGLEVEL $MGW_CONF $args
+    $BATCHYPY -b $BESSDIR -r -l $LOGLEVEL $MGW_CONF $args
     local odir="$OUT_DIR/b${bearer_num}_norm_${normalized}"
     mkdir -p $odir
     local ofile="${odir}/${controller}_${mode}_norm_${normalized}_${meas_id}.txt"

@@ -31,7 +31,7 @@ function run_rc_scenario() {
     local delay_slo=${4:-"1_000_000"}
     local leaves=16
     local args="controller=$controller,mode=$mode,rounds=$ROUNDS,delay_bound1=$delay_slo"
-    $BATCHYPY -r -l $LOGLEVEL $RC_CONF $args
+    $BATCHYPY -b $BESSDIR -r -l $LOGLEVEL $RC_CONF $args
     mkdir -p $OUT_DIR
     local ofile="${OUT_DIR}/${controller}_${mode}_${meas_id}.txt"
     mv /tmp/rcstatic${leaves}_${mode}_${controller}.txt ${ofile}

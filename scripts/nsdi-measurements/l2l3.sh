@@ -36,7 +36,7 @@ function run_l2l3_scenario {
     local args="rounds=$ROUNDS,controller=$controller,mode=$mode,"
     args+="branch_num=$branch_num,nhop_num=$nhop_num,$aclnat,max_delay=$delay_slo"
 
-    $BATCHYPY -r -l $LOGLEVEL $L2L3_CONF $args
+    $BATCHYPY -b $BESSDIR -r -l $LOGLEVEL $L2L3_CONF $args
 
     case "$aclnat" in
 	*acl=true*)

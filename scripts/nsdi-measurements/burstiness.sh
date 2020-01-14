@@ -32,7 +32,7 @@ function run_simpletree_scenario() {
     local meas_id=${4:-0}
     local args="controller=${controller},rounds=$ROUNDS,"
     args+="leaves=${numleaves},burstiness=${burst}"
-    $BATCHYPY -r -l $LOGLEVEL $CONF $args
+    $BATCHYPY -b $BESSDIR -r -l $LOGLEVEL $CONF $args
     mkdir -p $OUT_DIR
     local ofile="${OUT_DIR}/${numleaves}_${controller}_bu${burst}_${meas_id}.txt"
     mv /tmp/simple_tree2_RTC.txt ${ofile}

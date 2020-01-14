@@ -34,7 +34,7 @@ function run_l3vrf_scenario {
     local args="rounds=$ROUNDS,controller=$controller,mode=$mode,"
     args+="vlan_num=$vlan_num,nhop_num=$nhop_num,max_delay=$delay_slo"
 
-    $BATCHYPY -r -l $LOGLEVEL $L3VRF_CONF $args
+    $BATCHYPY -b $BESSDIR -r -l $LOGLEVEL $L3VRF_CONF $args
 
     local odir="$OUT_DIR/v${vlan_num}_n${nhop_num}"
     mkdir -p $odir

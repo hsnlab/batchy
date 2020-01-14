@@ -33,7 +33,7 @@ function run_simpletree_scenario() {
     local meas_id=${4:-0}
     local args="controller=projgrad,controlled=${controlled},rounds=$ROUNDS,"
     args+="leaves=${numleaves},cycles_per_batch=${t0},cycles_per_packet=${t1}"
-    $BATCHYPY -r -l $LOGLEVEL $CONF $args
+    $BATCHYPY -b $BESSDIR -r -l $LOGLEVEL $CONF $args
     mkdir -p $OUT_DIR
     local ofile="${OUT_DIR}/${numleaves}_${controlled}_${t0}_${t1}_${meas_id}.txt"
     mv /tmp/simple_tree_RTC.txt ${ofile}

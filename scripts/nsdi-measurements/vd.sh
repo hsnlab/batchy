@@ -30,5 +30,5 @@ ctrlrs=(null max onoff projgrad)
 
 # L2L3
 for ctrlr in ${ctrlrs[@]}; do
-    $BATCHYPY -r -l $LOGLEVEL $L2L3_CONF controller=$ctrlr
+    $BATCHYPY -b $BESSDIR -r -l $LOGLEVEL $L2L3_CONF controller=$ctrlr
 done

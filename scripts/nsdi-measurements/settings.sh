@@ -2,6 +2,9 @@ CUR_DIR=`dirname $0`
 BATCHYROOT=$CUR_DIR/../..
 BATCHYPY="$BATCHYROOT/batchy.py"
 
+# BESS install directory
+BESSDIR="/opt/bess"
+
 # batchy loglevel
 LOGLEVEL="CRITICAL"
 

@@ -35,7 +35,7 @@ function run_l2l3_pcap_scenario {
     args+="branch_num=1,nhop_num=$nhop_num,max_delay=$delay_slo,"
     args+="src_pcap=$pcap_src,acl=false,nat=false"
 
-    $BATCHYPY -r -l $LOGLEVEL $L2L3_CONF $args
+    $BATCHYPY -b $BESSDIR -r -l $LOGLEVEL $L2L3_CONF $args
 
     local odir="$OUT_DIR/b1_n${nhop_num}_pcap"
     mkdir -p $odir
