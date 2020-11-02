@@ -31,7 +31,7 @@ from . import utils
 from . import worker
 
 
-class Batchy(object, metaclass=utils.Singleton):
+class Batchy(metaclass=utils.Singleton):
     def __init__(self, bess=None):
         self.bess = bess
         self.round = 1
@@ -637,5 +637,5 @@ class Batchy(object, metaclass=utils.Singleton):
 
                 if t == 0:
                     # print header
-                    csv_writer.writerow([k for k in row])
+                    csv_writer.writerow(k for k in row)
                 csv_writer.writerow([v for k, v in row.items()])

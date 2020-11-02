@@ -23,7 +23,7 @@ from . import settings
 from . import utils
 
 
-class Flow(object):
+class Flow:
     def __init__(self, bess, path, name=None, delay_slo=None, rate_slo=None,
                  source_params=None, id=-1):
         self.bess = bess
@@ -216,7 +216,7 @@ class Flow(object):
         (resource, limit), = self.source_params['limit'].items()
         if resource == 'packet' and stat['pps'] >= settings.CBR_RATIO * limit:
             return True
-        elif resource == 'bit' and stat['bps'] >= settings.CBR_RATIO * limit:
+        if resource == 'bit' and stat['bps'] >= settings.CBR_RATIO * limit:
             return True
         return False
 

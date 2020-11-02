@@ -23,7 +23,7 @@ from . import settings
 from . import utils
 
 
-class Worker(object):
+class Worker:
     def __init__(self, batchy, name, wid, core=None):
         self.wid = wid
         self.core = core or wid

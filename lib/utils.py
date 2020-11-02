@@ -141,7 +141,7 @@ def check_ratelimit(rate_limit):
     (resource, limit), = rate_limit.items()
     if resource in ('packet', 'bit'):
         return rate_limit
-    elif resource == 'count':
+    if resource == 'count':
         # we cannot rate-limit to batch rate: even though we could set the
         # limit at the source but we cannot measure whether the flow is
         # saturated as batch size/count changes inside the pipeline
@@ -216,6 +216,6 @@ def filter_obj_list(object_list, obj_attrib, filtered_words):
 def format_sum_rate(sum_rate, unit='pps'):
     if sum_rate > 1_000_000:
         return f'{sum_rate / 1e6} M{unit}'
-    elif sum_rate > 1_000:
+    if sum_rate > 1_000:
         return f'{sum_rate / 1e3} k{unit}'
     return f'{sum_rate} {unit}'

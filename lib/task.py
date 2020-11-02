@@ -27,7 +27,7 @@ from . import settings
 from . import utils
 
 
-class Task(object):
+class Task:
     def __init__(self, batchy, worker, name='', queue=None, weight=1,
                  queue_size=None, backpressure=None):
         self.batchy = batchy

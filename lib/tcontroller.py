@@ -44,7 +44,7 @@ def get_tcontroller(task, base_class):
     return ctrlr_class(task)
 
 
-class TaskController(object):
+class TaskController:
     ''' Task controller base class '''
 
     def __init__(self, task):
@@ -294,7 +294,7 @@ class FeasDirRTCTaskController(RTCTaskController):
                                 f'1/x_v={t_v:.3f}: setting q_v -> {q}')
                 module.set_trigger(q)
                 return
-            elif delay_budget > 0 and min_q == 1:
+            if delay_budget > 0 and min_q == 1:
                 # q_v=1 will not yield additional delay: if it is allowed, set it
                 if logging.getLogger().isEnabledFor(logging.INFO):
                     logging.log(logging.INFO,
@@ -304,7 +304,7 @@ class FeasDirRTCTaskController(RTCTaskController):
                                 f'q_v=1 is feasible: setting q_v - > {min_q}')
                 module.set_trigger(min_q)
                 return
-            # else:
+
             if logging.getLogger().isEnabledFor(logging.INFO):
                 logging.log(logging.INFO,
                             f'CONTROL: {self.task.name} : '

@@ -16,7 +16,7 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 
-class TaskFlow(object):
+class TaskFlow:
     def __init__(self, path, delay_bound, id=-1):
         self.path = path
         self.delay_bound = delay_bound

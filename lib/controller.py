@@ -23,7 +23,7 @@ from . import settings
 from . import utils
 
 
-class Controller(object):
+class Controller:
     '''Master controller for a worker object.
 
        Currently does not do anything.

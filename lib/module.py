@@ -22,7 +22,7 @@ from . import settings
 from . import utils
 
 
-class Module(object):
+class Module:
     ''' Represents a Batchy module.
 
         Type can be:
