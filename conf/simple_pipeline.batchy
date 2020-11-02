@@ -59,8 +59,10 @@ t0 = w0.add_task('task0', type=mode)
 # Step 3: add modules to task, set internal pipeline
 splitter = t0.add_module(RandomSplit(gates=list(range(2)), drop_rate=0.0),
                          type='ingress')
-nf1 = t0.add_module(Bypass(cycles_per_batch=1000, cycles_per_packet=100))
-nf2 = t0.add_module(Bypass(cycles_per_batch=1000, cycles_per_packet=100))
+nf1 = t0.add_module(Bypass(cycles_per_batch=1000, cycles_per_packet=100),
+                    T_0=1000, T_1=100)
+nf2 = t0.add_module(Bypass(cycles_per_batch=1000, cycles_per_packet=100),
+                    T_0=1000, T_1=100)
 
 splitter.connect(nf1, ogate=0)
 splitter.connect(nf2, ogate=1)
