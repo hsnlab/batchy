@@ -274,7 +274,7 @@ class Task:
         self.reset(m)
 
     def format_stat(self):
-        last_stat = pprint.pformat(self.stat[-1], indent=4, width=1)
+        last_stat = pprint.pformat(dict(self.stat[-1]), indent=4, width=1)
         return f'Task {self.name}:\n{last_stat}'
 
     def get_module_stat(self, prev_stats):
