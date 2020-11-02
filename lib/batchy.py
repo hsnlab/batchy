@@ -496,6 +496,7 @@ class Batchy(metaclass=utils.Singleton):
     def _import_matplotlib():
         plt = None
         try:
+            logging.getLogger('matplotlib').setLevel(logging.WARNING)
             import matplotlib.pyplot as plt
         except ImportError:
             txt = 'plot: matplotlib can not be imported, plotting skipped'
