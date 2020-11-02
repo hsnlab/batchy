@@ -87,7 +87,7 @@ class TaskController:
         return delay, delay_bound, over, error, dist
 
     def control(self, *args, **kwargs):
-        pass
+        self.period += 1
 
 
 class RTCTaskController(TaskController):
@@ -248,6 +248,7 @@ class FeasDirRTCTaskController(RTCTaskController):
         return f'FeasDirRTCTaskController: ptr={self.ptr}'
 
     def control(self, *args, **kwargs):
+        super().control()
         batchy = self.task.batchy
         cmodules = self.task.cmodules
 
@@ -555,6 +556,7 @@ class FeasDirWFQTaskController(WFQTaskController):
         return f'FeasDirWFQTaskController: ptr={self.ptr}'
 
     def control(self, *args, **kwargs):
+        super().control()
         module = self.task.cmodules[self.ptr]
         self.ptr = (self.ptr + 1) % len(self.task.cmodules)
         if logging.getLogger().isEnabledFor(logging.DEBUG):
@@ -710,6 +712,7 @@ class ProjGradientRTCTaskController(RTCTaskController):
         return 'ProjGradientRTCTaskController'
 
     def control(self, *args, **kwargs):
+        super().control()
         batchy = self.task.batchy
         cmodules = self.task.cmodules
 
@@ -1076,6 +1079,7 @@ class OnOffRTCTaskController(RTCTaskController):
         return 'OnOffRTCTaskController'
 
     def control(self, *args, **kwargs):
+        super().control()
         batchy = self.task.batchy
         cmodules = self.task.cmodules
 
@@ -1279,6 +1283,7 @@ class OnOffRTCTaskController(RTCTaskController):
 #         return self.A.T @ np.diag(self.dx) @ self.A
 
 #     def control(self, *args, **kwargs):
+#         super().control()
 #         task = self.task
 #         batchy = task.batchy
 #         cmodules = task.cmodules

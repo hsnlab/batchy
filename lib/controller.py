@@ -30,9 +30,10 @@ class Controller:
     '''
     def __init__(self, batchy):
         self.batchy = batchy
+        self.period = 0
 
     def control(self):
-        pass
+        self.period += 1
 
 
 class NormalizedGreedyController(Controller):
@@ -134,6 +135,7 @@ class NormalizedGreedyController(Controller):
         return viol, w_state
 
     def control(self):
+        super().control()
         viol, w_state = self.detect()
         if not viol:
             logging.log(logging.INFO,
@@ -312,6 +314,7 @@ class GreedyController(Controller):
                                                   resident_flows, modules_done)
 
     def control(self):
+        super().control()
         c_workers = utils.filter_obj_list(self.batchy.workers, 'name',
                                           self.blacklisted_names)
         for worker in c_workers:
