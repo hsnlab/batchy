@@ -153,7 +153,7 @@ class Task:
             self.sink = self.add_module(sink, type='bess')
 
     def add_tflow(self, parent, path):
-        new_tflow = tflow.TaskFlow(path, parent, id=len(self.tflows))
+        new_tflow = tflow.TaskFlow(path, parent.D, id=len(self.tflows))
         self.tflows.append(new_tflow)
         return new_tflow
 
