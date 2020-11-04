@@ -286,7 +286,7 @@ class FeasDirRTCTaskController(RTCTaskController):
             delay_budget = min(delay_budget, settings.DEFAULT_DELAY_BOUND)
 
             q = min(max_q, min_q + settings.DEFAULT_BUFFER_PULL)
-            if delay_budget > (q / min_q * t_v):
+            if min_q and delay_budget > (q / min_q * t_v):
                 if logging.getLogger().isEnabledFor(logging.INFO):
                     logging.log(logging.INFO,
                                 f'CONTROL: {self.task.name} : '
