@@ -717,7 +717,7 @@ class ProjGradientRTCTaskController(RTCTaskController):
         cmodules = self.task.cmodules
 
         delay, delay_bound, _, sum_error, delay_dist = self.get_violating_flows()
-        delay_budget = {f:delay_bound[f] - delay[f] for f in self.flows}
+        delay_budget = {f.id: delay_bound[f.id] - delay[f.id] for f in self.flows}
 
         # count times in [nsec]
         T_0, T_1, x, b, q, t, R, q_min, dt_dq, fxm = \
@@ -761,20 +761,20 @@ class ProjGradientRTCTaskController(RTCTaskController):
             # FEASIBILITY RECOVERY PHASE: push back all flows to below delay
             # bound, PUSH q_v to zero if needed
             for f in self.flows:
-                if delay_budget[f] >= 0:
+                if delay_budget[f.id] >= 0:
                     continue
 
                 if logging.getLogger().isEnabledFor(logging.DEBUG):
                     logging.log(logging.DEBUG,
                                 f'RECOVERY MODE for flow {f.name}: '
-                                f'delay={delay[f]:.3f}, bound={delay_bound[f]:.3f}')
+                                f'delay={delay[f.id]:.3f}, bound={delay_bound[f.id]:.3f}')
 
                 fxf[f] = True
                 for _, v in by_delay:
                     if fxm[v] or q[v] == 0 or R[v] == 0 or not f.traverses_module(v):
                         continue
 
-                    delta_q = int(abs(delay_budget[f]) / dt_dq[v]) + 1
+                    delta_q = int(abs(delay_budget[f.id]) / dt_dq[v]) + 1
 
                     if logging.getLogger().isEnabledFor(logging.DEBUG):
                         logging.log(logging.DEBUG,
@@ -791,11 +791,11 @@ class ProjGradientRTCTaskController(RTCTaskController):
                     if logging.getLogger().isEnabledFor(logging.DEBUG):
                         logging.log(logging.DEBUG,
                                     f'\tmodule {v.name}: set q_v: {q[v]:d} -> {q_new:d}, '
-                                    f'delay_budget: {delay_budget[f]:.3f} -> '
-                                    f'{delay_budget[f] + delay_diff:.3f}')
+                                    f'delay_budget: {delay_budget[f.id]:.3f} -> '
+                                    f'{delay_budget[f.id] + delay_diff:.3f}')
 
                     for ff in batchy.flows_via_module(v):
-                        delay_budget[ff] += delay_diff
+                        delay_budget[ff.id] += delay_diff
 
                     if logging.getLogger().isEnabledFor(logging.INFO):
                         logging.log(logging.INFO,
@@ -805,13 +805,13 @@ class ProjGradientRTCTaskController(RTCTaskController):
                     q[v] = q_new
                     v.set_trigger(q_new)
 
-                    if delay_budget[f] >= 0:
+                    if delay_budget[f.id] >= 0:
                         break
 
-                if delay_budget[f] > 0 and logging.getLogger().isEnabledFor(logging.DEBUG):
+                if delay_budget[f.id] > 0 and logging.getLogger().isEnabledFor(logging.DEBUG):
                     logging.log(logging.DEBUG,
                                 f'\t--> tflow {f.name}: RECOVERY ready: '
-                                f'delay_budget: {delay_budget[f]:.3f}')
+                                f'delay_budget: {delay_budget[f.id]:.3f}')
                     continue
 
         # PULL PHASE: pull free modules
@@ -825,12 +825,12 @@ class ProjGradientRTCTaskController(RTCTaskController):
             flows_via_module = batchy.flows_via_module(v)
             if any(fxf[f] for f in flows_via_module):
                 continue
-            max_delay = min(delay_budget[f] for f in flows_via_module)
+            max_delay = min(delay_budget[f.id] for f in flows_via_module)
 
             delay_diff = q_min[v] * dt_dq[v]
             if delay_diff < max_delay:
                 for ff in flows_via_module:
-                    delay_budget[ff] -= delay_diff
+                    delay_budget[ff.id] -= delay_diff
                 if logging.getLogger().isEnabledFor(logging.INFO):
                     logging.log(logging.INFO,
                                 f'\tmodule {v.name}: PULLING: q_v: {q[v]:.3f}, '
@@ -857,13 +857,13 @@ class ProjGradientRTCTaskController(RTCTaskController):
         # delay
         A1 = []
         for f in self.flows:
-            if fxf[f] or delay[f] < delay_bound[f] * (1 - settings.DEFAULT_TOLERANCE):
+            if fxf[f] or delay[f.id] < delay_bound[f.id] * (1 - settings.DEFAULT_TOLERANCE):
                 continue
 
             if logging.getLogger().isEnabledFor(logging.DEBUG):
                 logging.log(logging.DEBUG,
                             f'GRADIENT MODE: flow {f.name} is TIGHT: '
-                            f'delay={delay[f]:.3f}, bound={delay_bound[f]:.3f}')
+                            f'delay={delay[f.id]:.3f}, bound={delay_bound[f.id]:.3f}')
 
             tpath = next((e['tflow'].path for e in f.path if e['task'] == self.task), [])
 
@@ -966,7 +966,7 @@ class ProjGradientRTCTaskController(RTCTaskController):
             tpath = next((e['tflow'].path for e in flow.path if e['task'] == self.task), [])
             delta_d = sum([dt_dq[v] * delta_q[v] for v in unfxm if v in tpath])
             if delta_d > 0:
-                lmbd = min(lmbd, delay_budget[flow] / delta_d)
+                lmbd = min(lmbd, delay_budget[flow.id] / delta_d)
 
         # trigger
         for u in unfxm:
@@ -1010,8 +1010,8 @@ class ProjGradientRTCTaskController(RTCTaskController):
             for f in self.flows:
                 if fxf[f] or not f.traverses_module(v):
                     continue
-                if delay[f] + dt_dq[v] * delta_qv > \
-                   delay_bound[f] * (1 - settings.DEFAULT_TOLERANCE):
+                if delay[f.id] + dt_dq[v] * delta_qv > \
+                   delay_bound[f.id] * (1 - settings.DEFAULT_TOLERANCE):
                     delta_qv -= 1
                     break
 
@@ -1023,35 +1023,6 @@ class ProjGradientRTCTaskController(RTCTaskController):
                             f'\tmodule {v.name}: GRADIENT PROJECTION: setting: '
                             f'q[v]: {q[v]:d} -> {q_new:d}')
             v.set_trigger(q_new)
-
-    def get_violating_flows(self):
-        ''' Collect flows' delay-SLO violation data from flow-data stored in
-            dicts.
-
-            Returns:
-            delay (dict): last measured delay of flows
-            delay_bound (float):  delay bounds of flows
-            over (list): modules violating contraint
-            error (float): sum of delay violations
-            dist (float): smallest distance from the delay contraint over all flows
-
-        '''
-        delay_key = f'latency_{settings.DELAY_MAX_PERC}'
-        delay = {f: f.stat[-1][delay_key] for f in self.flows}
-        delay_bound = {f: (f.D if f.D is not None
-                           else settings.DEFAULT_DELAY_BOUND)
-                       for f in self.flows}
-        error = 0.0
-        over = []
-        dist = sum(delay_bound.values())  # large number
-        for flow in self.flows:
-            error_f = delay[flow] - delay_bound[flow]
-            if error_f > 0:
-                error += error_f
-                over.append(flow)
-            else:
-                dist = min(dist, -error_f)
-        return delay, delay_bound, over, error, dist
 
 
 class OnOffTaskController(TaskController):
@@ -1084,7 +1055,7 @@ class OnOffRTCTaskController(RTCTaskController):
         cmodules = self.task.cmodules
 
         delay, delay_bound, _, sum_error, delay_dist = self.get_violating_flows()
-        delay_budget = {f:delay_bound[f] - delay[f] for f in self.flows}
+        delay_budget = {f.id: delay_bound[f.id] - delay[f.id] for f in self.flows}
 
         # count times in [nsec]
         T_0, T_1, x, b, q, t, R, dt_dq, fxm = {}, {}, {}, {}, {}, {}, {}, {}, {}
@@ -1126,13 +1097,13 @@ class OnOffRTCTaskController(RTCTaskController):
             # FEASIBILITY RECOVERY PHASE: push back all flows to below delay
             # bound, PUSH q_v to zero if needed
             for f in self.flows:
-                if delay_budget[f] >= 0:
+                if delay_budget[f.id] >= 0:
                     continue
 
                 if logging.getLogger().isEnabledFor(logging.DEBUG):
                     logging.log(logging.DEBUG,
                                 f'RECOVERY MODE for flow {f.name}: '
-                                f'delay={delay[f]:.3f}, bound={delay_bound[f]:.3f}')
+                                f'delay={delay[f.id]:.3f}, bound={delay_bound[f.id]:.3f}')
 
                 fxf[f] = True
                 for _, v in by_delay:
@@ -1150,11 +1121,11 @@ class OnOffRTCTaskController(RTCTaskController):
                     if logging.getLogger().isEnabledFor(logging.DEBUG):
                         logging.log(logging.DEBUG,
                                     f'\tmodule {v.name}: set q_v: {q[v]:d} -> 0, '
-                                    f'delay_budget: {delay_budget[f]:.3f} -> '
+                                    f'delay_budget: {delay_budget[f.id]:.3f} -> '
                                     f'{delay_diff:.3f}')
 
                     for ff in batchy.flows_via_module(v):
-                        delay_budget[ff] += delay_diff
+                        delay_budget[ff.id] += delay_diff
 
                     if logging.getLogger().isEnabledFor(logging.INFO):
                         logging.log(logging.INFO,
@@ -1164,10 +1135,10 @@ class OnOffRTCTaskController(RTCTaskController):
                     q[v] = 0
                     v.set_trigger(0)
 
-                if delay_budget[f] > 0 and logging.getLogger().isEnabledFor(logging.DEBUG):
+                if delay_budget[f.id] > 0 and logging.getLogger().isEnabledFor(logging.DEBUG):
                     logging.log(logging.DEBUG,
                                 f'\t--> tflow {f.name}: RECOVERY ready: '
-                                f'delay_budget: {delay_budget[f]:.3f}')
+                                f'delay_budget: {delay_budget[f.id]:.3f}')
                     continue
 
         # PULL PHASE: pull free modules
@@ -1181,12 +1152,12 @@ class OnOffRTCTaskController(RTCTaskController):
             flows_via_module = batchy.flows_via_module(v)
             if any(fxf[f] for f in flows_via_module):
                 continue
-            max_delay = min(delay_budget[f] for f in flows_via_module)
+            max_delay = min(delay_budget[f.id] for f in flows_via_module)
 
             delay_diff = settings.BATCH_SIZE * dt_dq[v]
             if delay_diff < max_delay:
                 for ff in flows_via_module:
-                    delay_budget[ff] -= delay_diff
+                    delay_budget[ff.id] -= delay_diff
                 if logging.getLogger().isEnabledFor(logging.INFO):
                     logging.log(logging.INFO,
                                 f'\tmodule {v.name}: PULLING: q_v: {q[v]:.3f}, '
@@ -1202,35 +1173,6 @@ class OnOffRTCTaskController(RTCTaskController):
                             f'NOT PULLING to q_min: {settings.BATCH_SIZE:.3f}, '
                             f'delay_diff = {delay_diff:.3f} > '
                             f'max_delay={max_delay:.3f}')
-
-    def get_violating_flows(self):
-        ''' Collect flows' delay-SLO violation data from flow-data stored in
-            dicts.
-
-            Returns:
-            delay (dict): last measured delay of flows
-            delay_bound (float):  delay bounds of flows
-            over (list): modules violating contraint
-            error (float): sum of delay violations
-            dist (float): smallest distance from the delay contraint over all flows
-
-        '''
-        delay_key = f'latency_{settings.DELAY_MAX_PERC}'
-        delay = {f: f.stat[-1][delay_key] for f in self.flows}
-        delay_bound = {f: (f.D if f.D is not None
-                           else settings.DEFAULT_DELAY_BOUND)
-                       for f in self.flows}
-        error = 0.0
-        over = []
-        dist = sum(delay_bound.values())  # large number
-        for flow in self.flows:
-            error_f = delay[flow] - delay_bound[flow]
-            if error_f > 0:
-                error += error_f
-                over.append(flow)
-            else:
-                dist = min(dist, -error_f)
-        return delay, delay_bound, over, error, dist
 
 
 # ###################################################
