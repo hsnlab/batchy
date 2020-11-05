@@ -50,13 +50,16 @@ class TaskController:
     def __init__(self, task):
         self.task = task
         self.period = 0
-        self.flows = [f for f in task.batchy.flows if f.traverses_task(task)]
+        self.tflows = task.tflows
         if task.type == 'RTC' and not task.cmodules:
             logging.log(logging.DEBUG,
                         f'No controllable module found in RTC task "{task.name}"')
             task.controller = None
         else:
             task.controller = self
+
+    def control(self, *args, **kwargs):
+        self.period += 1
 
     def get_violating_flows(self):
         ''' Collect flows' delay-SLO violation data
@@ -70,24 +73,21 @@ class TaskController:
 
         '''
         delay_key = f'latency_{settings.DELAY_MAX_PERC}'
-        delay = {f.id: f.stat[-1][delay_key] for f in self.flows}
-        delay_bound = {f.id: (f.D if f.D is not None
-                              else settings.DEFAULT_DELAY_BOUND)
-                       for f in self.flows}
+        delay = {tf.id: tf.stat[-1][delay_key] for tf in self.tflows}
+        delay_bound = {tf.id: (tf.delay_bound if tf.delay_bound is not None
+                               else settings.DEFAULT_DELAY_BOUND)
+                       for tf in self.tflows}
         error = 0.0
         over = []
         dist = sum(delay_bound.values())  # large number
-        for flow in self.flows:
-            error_f = delay[flow.id] - delay_bound[flow.id]
-            if error_f > 0:
-                error += error_f
-                over.append(flow)
+        for tflow in self.tflows:
+            error_tf = delay[tflow.id] - delay_bound[tflow.id]
+            if error_tf > 0:
+                error += error_tf
+                over.append(tflow)
             else:
-                dist = min(dist, -error_f)
+                dist = min(dist, -error_tf)
         return delay, delay_bound, over, error, dist
-
-    def control(self, *args, **kwargs):
-        self.period += 1
 
 
 class RTCTaskController(TaskController):
@@ -217,9 +217,9 @@ for fix_batch_size in range(1, settings.BATCH_SIZE):
 
 class FeasDirTaskController(TaskController):
     ''' Create a proper controller for the task
-         RTC-controller for an RTC task
-         WFQ-controller for an WFQ task
-        then delegate calls to the new controller
+        then delegate calls to the new controller:
+         - RTC-controller for RTC task
+         - WFQ-controller for WFQ task
     '''
 
     def __init__(self, task):
@@ -249,7 +249,6 @@ class FeasDirRTCTaskController(RTCTaskController):
 
     def control(self, *args, **kwargs):
         super().control()
-        batchy = self.task.batchy
         cmodules = self.task.cmodules
 
         module = self.task.cmodules[self.ptr]
@@ -280,9 +279,8 @@ class FeasDirRTCTaskController(RTCTaskController):
                 module.set_trigger(min_q)
                 return
             t_v = 1e9 / x_v
-            delay_budget = min([delay_bound[f.id] - delay[f.id]
-                                for f in batchy.flows
-                                if f.traverses_module(module)])
+            delay_budget = min([delay_bound[tf.id] - delay[tf.id]
+                                for tf in self.tflows if module in tf.path])
             delay_budget = min(delay_budget, settings.DEFAULT_DELAY_BOUND)
 
             q = min(max_q, min_q + settings.DEFAULT_BUFFER_PULL)
@@ -331,10 +329,10 @@ class FeasDirRTCTaskController(RTCTaskController):
         # maybe we should need a more clever heuristics
         if q_v == min_q and x_v > 0:
             delay_budget = 0.0
-            for f in batchy.flows:
-                if f.traverses_module(module):
+            for tf in self.tflows:
+                if module in tf.path:
                     try:
-                        val = (delay[f.id] - delay_bound[f.id]) / delay_bound[f.id]
+                        val = (delay[tf.id] - delay_bound[tf.id]) / delay_bound[tf.id]
                     except ZeroDivisionError:
                         val = 0.0
                     delay_budget = max(val, delay_budget)
@@ -358,16 +356,16 @@ class FeasDirRTCTaskController(RTCTaskController):
                 return
 
         df_dq, dDf_dq = self.get_gradient(module)
-        sum_over_grad = sum([dDf_dq[f.id] for f in over])
+        sum_over_grad = sum([dDf_dq[tf.id] for tf in over])
 
         # no module violates delay constraints OR some flows violate the
         # delay contraints but this module would not affect those modules
         if sum_error == 0 or (sum_over_grad == 0 and df_dq < 0):
             # get the largest possible increase in q_v if possible
             delta_qv = min(max_q - q_v, settings.DELTA_TRIGGER_MAX)
-            for f in self.flows:
-                if dDf_dq[f.id] > 0:
-                    diff = (delay_bound[f.id] - delay[f.id]) / dDf_dq[f.id]
+            for tf in self.tflows:
+                if dDf_dq[tf.id] > 0:
+                    diff = (delay_bound[tf.id] - delay[tf.id]) / dDf_dq[tf.id]
                     delta_qv = min(delta_qv, int(diff) + settings.EXTRA_TRIGGER)
 
             if df_dq < 0 and logging.getLogger().isEnabledFor(logging.INFO):
@@ -394,13 +392,13 @@ class FeasDirRTCTaskController(RTCTaskController):
                 delta_trigger_max = min(settings.DELTA_TRIGGER_MAX,
                                         q_v - min_q,
                                         int(abs(sum_error / sum_over_grad)) + 1)
-                for f in self.flows:
-                    if dDf_dq[f.id] > 0 and f in over:
+                for tf in self.tflows:
+                    if dDf_dq[tf.id] > 0 and tf in over:
                         # flow overdelayed and delay will decrease
-                        tmp = int((delay[f.id] - delay_bound[f.id]) / abs(dDf_dq[f.id]))
-                    elif dDf_dq[f.id] < 0 and not f in over:
+                        tmp = int((delay[tf.id] - delay_bound[tf.id]) / abs(dDf_dq[tf.id]))
+                    elif dDf_dq[tf.id] < 0 and not tf in over:
                         # flow is not overdelayed and delay will increase
-                        tmp = int((delay_bound[f.id] - delay[f.id]) / abs(dDf_dq[f.id]))
+                        tmp = int((delay_bound[tf.id] - delay[tf.id]) / abs(dDf_dq[tf.id]))
                     else:
                         continue
                     tmp += settings.EXTRA_TRIGGER
@@ -409,13 +407,13 @@ class FeasDirRTCTaskController(RTCTaskController):
             else:
                 # increase trigger
                 delta_trigger_max = min(settings.DELTA_TRIGGER_MAX, max_q - q_v)
-                for f in self.flows:
-                    if dDf_dq[f.id] < 0 and f in over:
+                for tf in self.tflows:
+                    if dDf_dq[tf.id] < 0 and tf in over:
                         # flow overdelayed and delay will decrease
-                        tmp = int((delay[f.id] - delay_bound[f.id]) / abs(dDf_dq[f.id]))
-                    elif dDf_dq[f.id] > 0 and not f in over:
+                        tmp = int((delay[tf.id] - delay_bound[tf.id]) / abs(dDf_dq[tf.id]))
+                    elif dDf_dq[tf.id] > 0 and not tf in over:
                         # flow is not overdelayed and delay will increase
-                        tmp = int((delay_bound[f.id] - delay[f.id]) / abs(dDf_dq[f.id]))
+                        tmp = int((delay_bound[tf.id] - delay[tf.id]) / abs(dDf_dq[tf.id]))
                     else:
                         continue
                     tmp += settings.EXTRA_TRIGGER
@@ -459,16 +457,19 @@ class FeasDirRTCTaskController(RTCTaskController):
         df_dq = df_dqu
 
         # flows
-        dDf_dq = [0] * len(self.flows)
-        for f in self.flows:
-            # should have a single task flow
-            tf = f.path[0]['tflow']
-            cbr = f.is_rate_limited()
+        dDf_dq = [0] * len(self.tflows)
+        for tf in self.tflows:
+            try:
+                flow = next(f for f in self.task.get_flows() if tf in f.path)
+                cbr = flow.is_rate_limited()
+            except StopIteration:
+                cbr = False
             if logging.getLogger().isEnabledFor(logging.DEBUG):
                 rl_text = 'not rate-limited'
                 if cbr:
                     rl_text = 'RATE_LIMITED'
-                logging.log(logging.DEBUG, f'dDf_dq: flow {f} {rl_text}')
+                flow = next((f for f in self.task.get_flows() if tf in f.path), None)
+                logging.log(logging.DEBUG, f'dDf_dq: flow {flow} {rl_text}')
 
             qv_rv = 0    # sum_{v \in p_f} q_v/r_v
             for v in tf.cpath:
@@ -504,7 +505,7 @@ class FeasDirRTCTaskController(RTCTaskController):
                                 f'{dDf_dqu:.3f} -> {dDf_dqu + diff:.3f}')
                 dDf_dqu += diff
 
-            dDf_dq[f.id] = dDf_dqu
+            dDf_dq[tf.id] = dDf_dqu
 
         return (df_dq, dDf_dq)
 
@@ -514,9 +515,7 @@ class FeasDirRTCTaskController(RTCTaskController):
             raise ValueError(f'{u.name} has no stats available')
         if not u.is_controlled:
             raise ValueError(f'{u.name} is not controlled')
-
         r_u = u.stat[-1]['r_v']
-
         max_q = settings.BATCH_SIZE
         for v in u.c_desc:
             q_v = v.q_v
@@ -525,15 +524,13 @@ class FeasDirRTCTaskController(RTCTaskController):
             r_v = v.stat[-1]['r_v']
             r_uv = r_v / r_u
             max_q = min(max_q, int(1 / r_uv * q_v))
-
         min_q = int(u.stat[-1]['b_in'])
-
         return min_q, max_q
 
     def get_trigger_effect(self, module, delta_q, delay, delay_bound):
         dDf_dq = self.gradient[-1]['dDf_dq']
         error = 0
-        for i, _ in enumerate(self.flows):
+        for i, _ in enumerate(self.tflows):
             dDf_dqv = dDf_dq[i][module.id]
             err = delay[i] + dDf_dqv * delta_q - delay_bound[i]
             if err > 0:
@@ -575,14 +572,14 @@ class FeasDirWFQTaskController(WFQTaskController):
                         f'w_v = {w_v}, sum_error={sum_error:.3f}, '
                         f'dist={delay_dist:.3f}')
 
-        self.get_gradient()
+        self.gradient.append(self.get_gradient())
         if logging.getLogger().isEnabledFor(logging.DEBUG):
             logging.log(logging.DEBUG, self.format_grad())
 
         df_dw = self.gradient[-1]['df_dw']
         dtf_dw = self.gradient[-1]['dtf_dw']
 
-        sum_over_grad = sum([dtf_dw[f.id][cid] for f in over])
+        sum_over_grad = sum([dtf_dw[tf.id][cid] for tf in over])
 
         delta_wv = 0
         # no module violates delay constraints OR some flows violate the
@@ -649,15 +646,18 @@ class FeasDirWFQTaskController(WFQTaskController):
         # module with w=1), and another one arisig from that w affects the
         # frequency with which a module is scheduled; below, we ignore the first component
         grad['dtf_dw'] = collections.defaultdict(list)
-        for f in self.flows:
-            # should have a single task flow
-            tf = f.path[0]['tflow']
-            cbr = f.is_rate_limited()
+        for tf in self.tflows:
+            try:
+                flow = next(f for f in self.task.get_flows() if tf in f.path)
+                cbr = flow.is_rate_limited()
+            except StopIteration:
+                cbr = False
             if logging.getLogger().isEnabledFor(logging.DEBUG):
                 rl_text = 'not rate-limited'
                 if cbr:
                     rl_text = 'RATE_LIMITED'
-                logging.log(logging.DEBUG, f'dtf_dw: flow {f} {rl_text}')
+                flow = next((f for f in self.task.get_flows() if tf in f.path), None)
+                logging.log(logging.DEBUG, f'dtf_dw: flow {flow} {rl_text}')
 
             dtf_dw = []
             for u in self.task.cmodules:
@@ -678,9 +678,9 @@ class FeasDirWFQTaskController(WFQTaskController):
                                 f'T_1u={T_1[u]:.3f}: {dtf_dwu:.3f}')
                 dtf_dw.append(dtf_dwu)
 
-            grad['dtf_dw'][f.id].extend(dtf_dw)
+            grad['dtf_dw'][tf.id].extend(dtf_dw)
 
-        self.gradient.append(grad)
+        return grad
 
     def format_grad(self):
         grad_content = pprint.pformat(self.gradient[-1], indent=4, width=1)
@@ -713,11 +713,11 @@ class ProjGradientRTCTaskController(RTCTaskController):
 
     def control(self, *args, **kwargs):
         super().control()
-        batchy = self.task.batchy
         cmodules = self.task.cmodules
 
         delay, delay_bound, _, sum_error, delay_dist = self.get_violating_flows()
-        delay_budget = {f.id: delay_bound[f.id] - delay[f.id] for f in self.flows}
+        delay_budget = {tf.id: delay_bound[tf.id] - delay[tf.id]
+                        for tf in self.tflows}
 
         # count times in [nsec]
         T_0, T_1, x, b, q, t, R, q_min, dt_dq, fxm = \
@@ -739,7 +739,7 @@ class ProjGradientRTCTaskController(RTCTaskController):
 
         by_delay = [(t[v], v) for v in cmodules]
         by_delay.sort(key=lambda x: x[0], reverse=True)
-        fxf = {f: False for f in self.flows}
+        fxf = {tf: False for tf in self.tflows}
 
         if logging.getLogger().isEnabledFor(logging.INFO):
             logging.log(logging.INFO,
@@ -760,25 +760,25 @@ class ProjGradientRTCTaskController(RTCTaskController):
         if sum_error > 0:
             # FEASIBILITY RECOVERY PHASE: push back all flows to below delay
             # bound, PUSH q_v to zero if needed
-            for f in self.flows:
-                if delay_budget[f.id] >= 0:
+            for tf in self.tflows:
+                if delay_budget[tf.id] >= 0:
                     continue
 
                 if logging.getLogger().isEnabledFor(logging.DEBUG):
                     logging.log(logging.DEBUG,
-                                f'RECOVERY MODE for flow {f.name}: '
-                                f'delay={delay[f.id]:.3f}, bound={delay_bound[f.id]:.3f}')
+                                f'RECOVERY MODE for taskflow {tf.get_name()}: '
+                                f'delay={delay[tf.id]:.3f}, bound={delay_bound[tf.id]:.3f}')
 
-                fxf[f] = True
+                fxf[tf] = True
                 for _, v in by_delay:
-                    if fxm[v] or q[v] == 0 or R[v] == 0 or not f.traverses_module(v):
+                    if fxm[v] or q[v] == 0 or R[v] == 0 or not v in tf.path:
                         continue
 
-                    delta_q = int(abs(delay_budget[f.id]) / dt_dq[v]) + 1
+                    delta_q = int(abs(delay_budget[tf.id]) / dt_dq[v]) + 1
 
                     if logging.getLogger().isEnabledFor(logging.DEBUG):
                         logging.log(logging.DEBUG,
-                                    f'RECOVERY MODE for flow {f.name} at '
+                                    f'RECOVERY MODE for task flow {tf.get_name()} at '
                                     f'MODULE {v.name}: '
                                     f't[v]={t[v]:.3f}, dt_dq[v]={dt_dq[v]:.3f}')
 
@@ -791,27 +791,28 @@ class ProjGradientRTCTaskController(RTCTaskController):
                     if logging.getLogger().isEnabledFor(logging.DEBUG):
                         logging.log(logging.DEBUG,
                                     f'\tmodule {v.name}: set q_v: {q[v]:d} -> {q_new:d}, '
-                                    f'delay_budget: {delay_budget[f.id]:.3f} -> '
-                                    f'{delay_budget[f.id] + delay_diff:.3f}')
+                                    f'delay_budget: {delay_budget[tf.id]:.3f} -> '
+                                    f'{delay_budget[tf.id] + delay_diff:.3f}')
 
-                    for ff in batchy.flows_via_module(v):
-                        delay_budget[ff.id] += delay_diff
+                    for tff in self.tflows:
+                        if v in tff.path:
+                            delay_budget[tff.id] += delay_diff
 
                     if logging.getLogger().isEnabledFor(logging.INFO):
                         logging.log(logging.INFO,
-                                    f'\tmodule {v.name}: RECOVERY for flow {f.name}: '
+                                    f'\tmodule {v.name}: RECOVERY for taskflow {tf.get_name()}: '
                                     f'setting: q[v]: {q[v]:d} -> {q_new:d}')
                     fxm[v] = True
                     q[v] = q_new
                     v.set_trigger(q_new)
 
-                    if delay_budget[f.id] >= 0:
+                    if delay_budget[tf.id] >= 0:
                         break
 
-                if delay_budget[f.id] > 0 and logging.getLogger().isEnabledFor(logging.DEBUG):
+                if delay_budget[tf.id] > 0 and logging.getLogger().isEnabledFor(logging.DEBUG):
                     logging.log(logging.DEBUG,
-                                f'\t--> tflow {f.name}: RECOVERY ready: '
-                                f'delay_budget: {delay_budget[f.id]:.3f}')
+                                f'\t--> tflow {tf.get_name()}: RECOVERY ready: '
+                                f'delay_budget: {delay_budget[tf.id]:.3f}')
                     continue
 
         # PULL PHASE: pull free modules
@@ -822,15 +823,15 @@ class ProjGradientRTCTaskController(RTCTaskController):
             if b[v] >= settings.DEFAULT_PUSH_RATIO * settings.BATCH_SIZE:
                 continue
 
-            flows_via_module = batchy.flows_via_module(v)
-            if any(fxf[f] for f in flows_via_module):
+            tflows_via_module = [tf for tf in self.tflows if v in tf.path]
+            if any(fxf[tf] for tf in tflows_via_module):
                 continue
-            max_delay = min(delay_budget[f.id] for f in flows_via_module)
+            max_delay = min(delay_budget[tf.id] for tf in tflows_via_module)
 
             delay_diff = q_min[v] * dt_dq[v]
             if delay_diff < max_delay:
-                for ff in flows_via_module:
-                    delay_budget[ff.id] -= delay_diff
+                for tff in tflows_via_module:
+                    delay_budget[tff.id] -= delay_diff
                 if logging.getLogger().isEnabledFor(logging.INFO):
                     logging.log(logging.INFO,
                                 f'\tmodule {v.name}: PULLING: q_v: {q[v]:.3f}, '
@@ -850,26 +851,24 @@ class ProjGradientRTCTaskController(RTCTaskController):
         # PROJECTED GRADIENT OPTIMIZATION PHASE: optimize the modules
         # that are still free (fx=true)
         unfxm = [v for v in cmodules if not fxm[v] and q[v] > 0]
-        if not unfxm or all(fxf[f] for f in self.flows):
+        if not unfxm or all(fxf[tf] for tf in self.tflows):
             return
 
         # obtain tight bounds (within DEFAULT_TOLERANCE of bound)
         # delay
         A1 = []
-        for f in self.flows:
-            if fxf[f] or delay[f.id] < delay_bound[f.id] * (1 - settings.DEFAULT_TOLERANCE):
+        for tf in self.tflows:
+            if fxf[tf] or delay[tf.id] < delay_bound[tf.id] * (1 - settings.DEFAULT_TOLERANCE):
                 continue
 
             if logging.getLogger().isEnabledFor(logging.DEBUG):
                 logging.log(logging.DEBUG,
-                            f'GRADIENT MODE: flow {f.name} is TIGHT: '
-                            f'delay={delay[f.id]:.3f}, bound={delay_bound[f.id]:.3f}')
-
-            tpath = next((e['tflow'].path for e in f.path if e['task'] == self.task), [])
+                            f'GRADIENT MODE: task flow {tf.get_name()} is TIGHT: '
+                            f'delay={delay[tf.id]:.3f}, bound={delay_bound[tf.id]:.3f}')
 
             a1 = [0] * len(unfxm)
             for i, v in enumerate(unfxm):
-                if v in tpath:
+                if v in tf.path:
                     a1[i] = dt_dq[v]
 
             A1.append(a1)
@@ -962,11 +961,10 @@ class ProjGradientRTCTaskController(RTCTaskController):
         lmbd = 1e6  # large number
 
         # delay
-        for flow in self.flows:
-            tpath = next((e['tflow'].path for e in flow.path if e['task'] == self.task), [])
-            delta_d = sum([dt_dq[v] * delta_q[v] for v in unfxm if v in tpath])
+        for tflow in self.tflows:
+            delta_d = sum([dt_dq[v] * delta_q[v] for v in unfxm if v in tflow.path])
             if delta_d > 0:
-                lmbd = min(lmbd, delay_budget[flow.id] / delta_d)
+                lmbd = min(lmbd, delay_budget[tflow.id] / delta_d)
 
         # trigger
         for u in unfxm:
@@ -1007,11 +1005,11 @@ class ProjGradientRTCTaskController(RTCTaskController):
             # module allow then round fractional trigger up, otherwise
             # round down
             delta_qv = int(delta_q[v] * lmbd) + 1
-            for f in self.flows:
-                if fxf[f] or not f.traverses_module(v):
+            for tf in self.tflows:
+                if fxf[tf] or not v in tf.path:
                     continue
-                if delay[f.id] + dt_dq[v] * delta_qv > \
-                   delay_bound[f.id] * (1 - settings.DEFAULT_TOLERANCE):
+                if delay[tf.id] + dt_dq[v] * delta_qv > \
+                   delay_bound[tf.id] * (1 - settings.DEFAULT_TOLERANCE):
                     delta_qv -= 1
                     break
 
@@ -1055,7 +1053,7 @@ class OnOffRTCTaskController(RTCTaskController):
         cmodules = self.task.cmodules
 
         delay, delay_bound, _, sum_error, delay_dist = self.get_violating_flows()
-        delay_budget = {f.id: delay_bound[f.id] - delay[f.id] for f in self.flows}
+        delay_budget = {tf.id: delay_bound[tf.id] - delay[tf.id] for tf in self.tflows}
 
         # count times in [nsec]
         T_0, T_1, x, b, q, t, R, dt_dq, fxm = {}, {}, {}, {}, {}, {}, {}, {}, {}
@@ -1075,7 +1073,7 @@ class OnOffRTCTaskController(RTCTaskController):
 
         by_delay = [(t[v], v) for v in cmodules]
         by_delay.sort(key=lambda x: x[0], reverse=True)
-        fxf = {f: False for f in self.flows}
+        fxf = {tf: False for tf in self.tflows}
 
         if logging.getLogger().isEnabledFor(logging.INFO):
             logging.log(logging.INFO,
@@ -1096,23 +1094,23 @@ class OnOffRTCTaskController(RTCTaskController):
         if sum_error > 0:
             # FEASIBILITY RECOVERY PHASE: push back all flows to below delay
             # bound, PUSH q_v to zero if needed
-            for f in self.flows:
-                if delay_budget[f.id] >= 0:
+            for tf in self.tflows:
+                if delay_budget[tf.id] >= 0:
                     continue
 
                 if logging.getLogger().isEnabledFor(logging.DEBUG):
                     logging.log(logging.DEBUG,
-                                f'RECOVERY MODE for flow {f.name}: '
-                                f'delay={delay[f.id]:.3f}, bound={delay_bound[f.id]:.3f}')
+                                f'RECOVERY MODE for task flow {tf.get_name()}: '
+                                f'delay={delay[tf.id]:.3f}, bound={delay_bound[tf.id]:.3f}')
 
-                fxf[f] = True
+                fxf[tf] = True
                 for _, v in by_delay:
-                    if fxm[v] or q[v] == 0 or R[v] == 0 or not f.traverses_module(v):
+                    if fxm[v] or q[v] == 0 or R[v] == 0 or not v in tf.path:
                         continue
 
                     if logging.getLogger().isEnabledFor(logging.DEBUG):
                         logging.log(logging.DEBUG,
-                                    f'RECOVERY MODE for flow {f.name} at '
+                                    f'RECOVERY MODE for task flow {tf.get_name()} at '
                                     f'MODULE {v.name}: '
                                     f't[v]={t[v]:.3f}, dt_dq[v]={dt_dq[v]:.3f}')
 
@@ -1121,24 +1119,25 @@ class OnOffRTCTaskController(RTCTaskController):
                     if logging.getLogger().isEnabledFor(logging.DEBUG):
                         logging.log(logging.DEBUG,
                                     f'\tmodule {v.name}: set q_v: {q[v]:d} -> 0, '
-                                    f'delay_budget: {delay_budget[f.id]:.3f} -> '
+                                    f'delay_budget: {delay_budget[tf.id]:.3f} -> '
                                     f'{delay_diff:.3f}')
 
-                    for ff in batchy.flows_via_module(v):
-                        delay_budget[ff.id] += delay_diff
+                    for tff in self.tflows:
+                        if v in tff.path:
+                            delay_budget[tff.id] += delay_diff
 
                     if logging.getLogger().isEnabledFor(logging.INFO):
                         logging.log(logging.INFO,
-                                    f'\tmodule {v.name}: RECOVERY for flow {f.name}: '
+                                    f'\tmodule {v.name}: RECOVERY for task flow {tf.get_name()}: '
                                     f'setting: q[v]: {q[v]:d} -> 0')
                     fxm[v] = True
                     q[v] = 0
                     v.set_trigger(0)
 
-                if delay_budget[f.id] > 0 and logging.getLogger().isEnabledFor(logging.DEBUG):
+                if delay_budget[tf.id] > 0 and logging.getLogger().isEnabledFor(logging.DEBUG):
                     logging.log(logging.DEBUG,
-                                f'\t--> tflow {f.name}: RECOVERY ready: '
-                                f'delay_budget: {delay_budget[f.id]:.3f}')
+                                f'\t--> tflow {tf.get_name()}: RECOVERY ready: '
+                                f'delay_budget: {delay_budget[tf.id]:.3f}')
                     continue
 
         # PULL PHASE: pull free modules
@@ -1149,15 +1148,15 @@ class OnOffRTCTaskController(RTCTaskController):
             if b[v] >= settings.DEFAULT_PUSH_RATIO * settings.BATCH_SIZE:
                 continue
 
-            flows_via_module = batchy.flows_via_module(v)
-            if any(fxf[f] for f in flows_via_module):
+            tflows_via_module = [tf for tf in self.tflows if v in tf.path]
+            if any(fxf[tf] for tf in tflows_via_module):
                 continue
-            max_delay = min(delay_budget[f.id] for f in flows_via_module)
+            max_delay = min(delay_budget[tf.id] for tf in tflows_via_module)
 
             delay_diff = settings.BATCH_SIZE * dt_dq[v]
             if delay_diff < max_delay:
-                for ff in flows_via_module:
-                    delay_budget[ff.id] -= delay_diff
+                for tff in tflows_via_module:
+                    delay_budget[tff.id] -= delay_diff
                 if logging.getLogger().isEnabledFor(logging.INFO):
                     logging.log(logging.INFO,
                                 f'\tmodule {v.name}: PULLING: q_v: {q[v]:.3f}, '

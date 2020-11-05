@@ -197,6 +197,7 @@ class Flow:
                     x_v = float(module.stat[-1]['x_v'])
                     if x_v != 0.0:
                         t_f_estimate += 1e9 / x_v
+            path_segment['tflow'].stat.append(stat)
 
         stat['t_f_estimate'] = t_f_estimate
 

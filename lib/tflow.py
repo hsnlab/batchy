@@ -42,21 +42,27 @@ class TaskFlow:
         return f'TaskFlow: {self.path[0]} -> {self.path[-1]}: ' \
                f'delay_bound={self.delay_bound}'
 
+    def get_name(self):
+        task_name = "NoTask"
+        if hasattr(self.task,'name'):
+            task_name = self.task.name
+        return f'{task_name}_{self.id}'
+
     def erase_stat(self):
         ''' Erase collected statistics '''
         self.stat = []
 
     def get_last_cmodule(self):
-        ''' Get last controlled module '''
+        ''' Get last controlled module on task flow path '''
         try:
             return self.cpath[-1]
         except IndexError:
             return None
 
     def traverses_module(self, module):
-        ''' Check if module is traversed '''
+        ''' Check if module is traversed by this task flow '''
         return any(m for m in self.cpath if m == module)
 
     def get_delay_estimate(self, batch_size):
-        ''' Calculate delay estimate '''
+        ''' Calculate delay estimate for modules along the task flow path '''
         return sum([m.get_delay_estimate(batch_size) for m in self.path])
