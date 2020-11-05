@@ -164,13 +164,24 @@ class Flow:
         self.egress_module.connect(self.egress.sink)
 
     def traverses_worker(self, worker):
+        """ Check if a worker is traversed by the flow. Returns True if so. """
         return any(map(self.traverses_task, worker.tasks))
 
     def traverses_task(self, task):
+        """ Check if a task is traversed by the flow. Returns True if so. """
         return task in self.tpath
 
     def traverses_module(self, module):
+        """ Check if a module is traversed by the flow. Returns True if so. """
         return any(e for e in self.path if e['tflow'].traverses_module(module))
+
+    def has_tflow(self, tflow):
+        """ Checks if a task flow is part of the flow. Returns True if so. """
+        return any(tflow == segment['tflow'] for segment in self.path)
+
+    def get_tflows(self):
+        """ Returns list of task flows """
+        return [segment['tflow'] for segment in self.path]
 
     def get_stat(self):
         meas = self.egress_m.get_summary(

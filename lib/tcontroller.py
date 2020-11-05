@@ -460,7 +460,7 @@ class FeasDirRTCTaskController(RTCTaskController):
         dDf_dq = [0] * len(self.tflows)
         for tf in self.tflows:
             try:
-                flow = next(f for f in self.task.get_flows() if tf in f.path)
+                flow = next(f for f in self.task.get_flows() if f.has_tflow(tf))
                 cbr = flow.is_rate_limited()
             except StopIteration:
                 cbr = False
@@ -468,7 +468,7 @@ class FeasDirRTCTaskController(RTCTaskController):
                 rl_text = 'not rate-limited'
                 if cbr:
                     rl_text = 'RATE_LIMITED'
-                flow = next((f for f in self.task.get_flows() if tf in f.path), None)
+                flow = next((f for f in self.task.get_flows() if f.has_tflow(tf)), None)
                 logging.log(logging.DEBUG, f'dDf_dq: flow {flow} {rl_text}')
 
             qv_rv = 0    # sum_{v \in p_f} q_v/r_v
@@ -648,7 +648,7 @@ class FeasDirWFQTaskController(WFQTaskController):
         grad['dtf_dw'] = collections.defaultdict(list)
         for tf in self.tflows:
             try:
-                flow = next(f for f in self.task.get_flows() if tf in f.path)
+                flow = next(f for f in self.task.get_flows() if f.has_tflow(tf))
                 cbr = flow.is_rate_limited()
             except StopIteration:
                 cbr = False
@@ -656,7 +656,7 @@ class FeasDirWFQTaskController(WFQTaskController):
                 rl_text = 'not rate-limited'
                 if cbr:
                     rl_text = 'RATE_LIMITED'
-                flow = next((f for f in self.task.get_flows() if tf in f.path), None)
+                flow = next((f for f in self.task.get_flows() if f.has_tflow(tf)), None)
                 logging.log(logging.DEBUG, f'dtf_dw: flow {flow} {rl_text}')
 
             dtf_dw = []
@@ -1049,7 +1049,6 @@ class OnOffRTCTaskController(RTCTaskController):
 
     def control(self, *args, **kwargs):
         super().control()
-        batchy = self.task.batchy
         cmodules = self.task.cmodules
 
         delay, delay_bound, _, sum_error, delay_dist = self.get_violating_flows()
