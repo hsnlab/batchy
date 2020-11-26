@@ -583,7 +583,7 @@ class Batchy(metaclass=utils.Singleton):
         ax3.set_xlabel('time [round]')
         ax3.set_ylabel('pps')
 
-        plt.subplots_adjust(right=.65)
+        plt.subplots_adjust(left=.07, right=.57, top=.96, bottom=.06)
         plt.savefig(filename, dpi=150)
 
     def dump(self, filename, modules=None, flows=None, tasks=None):
