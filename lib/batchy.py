@@ -557,6 +557,7 @@ class Batchy(metaclass=utils.Singleton):
             ax2.plot(t, [s['t_f_estimate'] for s in f.stat],
                      marker=i % 11, label=f'Delay_estimate: flow {f.name}')
         ax2.set_title('flows: delay')
+        ax2.set_xlabel('time [round]')
         ax2.set_ylabel('nsec')
 
         # rate
