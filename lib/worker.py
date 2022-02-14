@@ -24,6 +24,8 @@ from . import utils
 
 
 class Worker:
+    """ Represents a Batchy worker """
+
     def __init__(self, batchy, name, wid, core=None):
         self.wid = wid
         self.core = core or wid
@@ -160,9 +162,9 @@ class Worker:
         return new_task
 
     def set_bulk_ratelimit(self, limit):
-        '''Sets the maximum share of total resources bulk flows may get useful
+        """Sets the maximum share of total resources bulk flows may get useful
            for rate-limiting bulk sources
-        '''
+        """
         limit = utils.check_ratelimit(limit)
         if limit is not None:
             (resource, _), = limit.items()
@@ -171,10 +173,10 @@ class Worker:
                                        limit=limit)
 
     def update_task_tc(self, task_name):
-        ''' Updates a task TC.
+        """ Updates a task TC.
             As long as there is a flow in the task that is
             not rate-limited, we cannot set hard rate-limit on the task.
-        '''
+        """
         t = self.get_task(task_name)
         if t.has_slo():
             tc_name = f'tc_qos:{t.name}'
@@ -203,13 +205,13 @@ class Worker:
             t.set_controller(cclass, *args, **kwargs)
 
     def move_task(self, task, dest):
-        ''' Move a task to other worker.
+        """ Move a task to other worker.
 
-        Arguments:
-        task: task to move
-        dest: target worker
+        Parameters:
+        task (Task): task to move
+        dest (Worker): target worker
 
-        '''
+        """
         # set target traffic class
         if task.type == 'WFQ':
             target_tc = dest.tc_wfq
@@ -232,32 +234,42 @@ class Worker:
         # TODO: set rate-limit
 
     def num_controlled_tasks(self):
+        """ Get number of controlled modules running on the worker """
         return len([t for t in self.tasks if t.controller is not None])
 
     def list_tcs(self):
+        """ List BESS traffic classes on worker """
         tcs = self.bess.list_tcs(wid=self.wid).classes_status
         return [getattr(tc, 'class') for tc in tcs]
 
     def get_flows(self):
+        """ Get flows traversing the worker """
         return [f for f in self.batchy.flows if f.traverses_worker(self)]
 
     def get_task(self, name):
+        """Find a task running on worker by its name
+           (returns None if task not found)
+        """
         return next((t for t in self.tasks if t.name == name), None)
 
     def get_stat(self):
+        """ Collect statistics of worker's tasks """
         for t in self.tasks:
             if t.controller is not None:
                 t.get_stat()
 
     def get_gradient(self):
+        """ Recalculate task gradients """
         for t in self.tasks:
             t.get_gradient()
 
     def reset(self):
+        """ Reset worker """
         for t in self.tasks:
             if t.controller is not None:
                 t.reset()
 
     def erase_stat(self):
+        """ Clear statistics of worker's tasks """
         for t in self.tasks:
             t.erase_stat()

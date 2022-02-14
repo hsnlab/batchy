@@ -1,3 +1,5 @@
+""" Batchy Settings """
+
 # BESS install location
 DEFAULT_BESSDIR = '~/bess'
 
@@ -8,7 +10,7 @@ TMP_DIR = '/tmp/'
 PROFILER_FILE = 'profiler_results.json'
 
 # enable if 'show pipeline' statistics are required
-ENABLE_OGATE_TRACKING = False
+ENABLE_OGATE_TRACKING = True
 
 # enable 'stop-the-world' assumption of the controller
 ENABLE_STOPTHEWORLD = False
@@ -31,6 +33,12 @@ DEFAULT_BULK_SOURCE_BURST_SIZE = 31
 # weight limits
 WEIGHT_MAX = 1024
 DELTA_WEIGHT_MAX = 8
+
+# DecompMain Batchy controller taskflow delay multiplier to finetune delays
+CTRLR_TFLOW_DELAY_MULTIPLIER = 0.9
+
+# lower limit on taskflow delay bound
+CTRLR_TFLOW_DELAY_BOUND_MIN = 100
 
 # size of queues between tasks
 # conservative setting: small delay, lower speed
@@ -64,6 +72,7 @@ DEFAULT_TC_QOS_SHARE = 1
 
 # toggle task-level backpressure
 ENABLE_BACKPRESSURE = True
+#ENABLE_BACKPRESSURE = False
 
 # batchiness bound for modules: module is controllable if batchiness is
 # smaller than the cound
@@ -74,6 +83,11 @@ DEFAULT_BUFFER_PULL = 4
 
 # push a module back to q_v=0 if it already receives large batches
 DEFAULT_PUSH_RATIO = 0.7
+
+# default step size as a percentage of the flow delay for decomposition
+# (used by the decomp controller)
+#DEFAULT_DECOMP_STEPSIZE_PERCENTAGE = 30_000
+DEFAULT_DECOMP_STEPSIZE_PERCENTAGE = 1000
 
 # default T0, T1 values are used when profiling data can not be read
 DEFAULT_T0 = 0
@@ -103,8 +117,12 @@ DEFAULT_WARMUP_PERIOD = 2
 # how much time to wait before applying control
 DEFAULT_CONTROL_PERIOD = 0.5
 
-# after how many task control rounds to call the batchy controller
+# after how many task control rounds to call the task controller
 DEFAULT_TASK_CONTROL_ROUNDS = 10
+
+# percentage of flow delay bound to increase infeasible taskflow delay bounds
+# by the task controller
+DELAY_BOUND_PERCENTAGE = 10
 
 # number of gradient projection iterations
 MAX_PROJGRAD_ITERATIONS = 3
@@ -116,6 +134,9 @@ DECOMP_EXTRA_WORKERS = 2
 DECOMP_EXTRA_TASK_CONTROLLER = 'projgradient'
 
 BYPASS_RATIO = 2.5
+
+# (task)flow estimates are multiplied by the given value
+TF_ESTIMATE_MULTIPLIER = 2  # overshoots: 2.718281828459045
 
 # flow measure parameters
 DEFAULT_MEASURE_LATENCY_NS_MAX = 250_000_000

@@ -1,0 +1,94 @@
+# Batchy
+#
+# Copyright (C) 2019 by its authors (See AUTHORS)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+
+mode = get_arg('mode', 'RTC', str)
+controller = get_arg('controller', 'projgrad', str)
+control_mode = get_arg('control_mode', 'fixstep', str)
+assert(control_mode in ('varstep', 'fixstep', 'dummystep'))
+
+rounds = get_arg('rounds', 20, int)
+control_period = get_arg('control_period', .5, float)
+
+no_reset = get_arg('no_reset', 0, int)
+
+# flow delay SLO [ns]
+flow_delay_slo = get_arg('delay_slo', 200_000, int)
+# flow_delay_slo = get_arg('delay_slo', 37_000, int)
+# flow_delay_slo = get_arg('delay_slo', 130_000, int)
+
+# Step 1: create worker
+w0 = batchy.add_worker('w0')
+w1 = batchy.add_worker('w1')
+
+# Step 2: add task to worker
+t0 = w0.add_task('task0', type=mode)
+t1 = w1.add_task('task1', type=mode)
+
+# Step 3: add modules to task, set internal pipeline
+nf_costs = {
+    'nf1': {'T0': 100, 'T1': 10},
+    'nf2': {'T0': 20_000, 'T1': 1000},
+    # 'nf2': {'T0': 5_000, 'T1': 200},
+}
+nf1 = t0.add_module(Bypass(cycles_per_batch=nf_costs['nf1']['T0'],
+                           cycles_per_packet=nf_costs['nf1']['T1']),
+                    T_0=nf_costs['nf1']['T0'],
+                    T_1=nf_costs['nf1']['T1'],
+                    type='ingress')
+nf2 = t1.add_module(Bypass(cycles_per_batch=nf_costs['nf2']['T0'],
+                           cycles_per_packet=nf_costs['nf2']['T1']),
+                    T_0=nf_costs['nf2']['T0'],
+                    T_1=nf_costs['nf2']['T1'],
+                    type='ingress')
+nf1.connect(nf2)
+
+# Step 4: add flows
+batchy.add_flow(name='flow',
+                path=[
+                    {'task': t0, 'path':[nf1], 'delay_bound':  80_000},
+                    {'task': t1, 'path':[nf2], 'delay_bound': 120_000},
+
+                    # {'task': t0, 'path':[nf1], 'delay_bound':  2_000},
+                    # {'task': t1, 'path':[nf2], 'delay_bound': 35_000},
+
+                    # {'task': t0, 'path':[nf1], 'delay_bound': 50_000},
+                    # {'task': t1, 'path':[nf2], 'delay_bound': 70_000},
+                ],
+                delay_slo=flow_delay_slo,
+                leader_task=t0)
+
+# Step 5: add test traffic
+batchy.add_source()
+batchy.add_sink()
+
+# Step 6: set controller for worker
+for t in (t0, t1):
+    t.set_controller(batchy.resolve_task_controller(controller))
+batchy.set_controller('DecompMainController')
+batchy.controller.set_control_mode(control_mode)
+
+# Step 7: run pipeline
+batchy.run(rounds, control_period)
+
+# Step 8: get results
+basename = 'multitask-test'
+batchy.plot(f'/tmp/{basename}.png')
+batchy.dump(f'/tmp/{basename}.txt')
+
+if not no_reset:
+    bess.reset_all()

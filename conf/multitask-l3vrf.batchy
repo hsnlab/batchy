@@ -1,0 +1,281 @@
+# Batchy
+#
+# Copyright (C) 2019 by its authors (See AUTHORS)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+import binascii
+import scapy.all as scapy
+import socket
+import struct
+
+
+mode = get_arg('mode', 'RTC', str)
+controller = get_arg('controller', 'projgrad', str)
+control_mode = get_arg('control_mode', 'fixstep', str)
+assert(control_mode in ('varstep', 'fixstep', 'dummystep'))
+
+rounds = get_arg('rounds', 100, int)
+control_period = get_arg('control_period', 0.1, float)
+
+burst_size = get_arg('burst_size', 32, int)
+src_worker_num = get_arg('src_worker_num', 1, int)
+
+acl_module = globals().get(get_arg('acl', 'DPDKACL'))
+fib_size = get_arg('fib_size', 500, int)
+acl_size = get_arg('acl_size', 100, int)
+
+vlan_num = get_arg('vlan_num', 3, int)
+nhop_num = get_arg('nhop_num', 2, int)
+
+max_delay = get_arg('max_delay', 200_000, int)
+
+no_reset = get_arg('no_reset', 0, int)
+
+def aton(ip): return socket.inet_aton(ip)
+
+
+def mac_from_str(s, mode='bytes'):
+    ret = binascii.unhexlify(s.replace(':', ''))
+    if mode == 'int':
+        ret = int.from_bytes(ret, byteorder='big')
+    return ret
+
+
+def gen_packet(proto, src_ip, dst_ip, src_port=10001, dst_port=10002,
+               vlan_tci=None):
+    eth = scapy.Ether(src='02:1e:67:9f:4d:ae', dst='ae:34:2e:16:b8:cd')
+    ip = scapy.IP(src=src_ip, dst=dst_ip)
+    udp = proto(sport=src_port, dport=dst_port)
+    payload = 'helloworld'
+    if vlan_tci is None:
+        pkt = eth/ip/udp/payload
+    else:
+        dotq = scapy.Dot1Q(vlan=vlan_tci)
+        pkt = eth/dotq/ip/udp/payload
+    return bytes(pkt)
+
+
+def get_octets(seq, offset=11, last=0):
+    return (int(seq / 64516) + offset,
+            int(seq % 64516 / 254),
+            (seq % 254) + 1,
+            last)
+
+
+def get_ip(seq, offset=11, last=0):
+    return '.'.join(map(str, get_octets(seq, offset, last)))
+
+
+def gen_acl_rules(num_entries=1024):
+    acl_rules = []
+    for i in range(num_entries):
+        acl_rules.append(
+            {'src_ip': f'{get_ip(i, offset=2)}/24',
+             'dst_ip': f'{get_ip(i, offset=2)}/24',
+             'drop': True})
+    return acl_rules
+
+
+flow_params = []
+for v in range(vlan_num):
+    for n in range(nhop_num):
+        i = v * nhop_num + n
+        templates = [gen_packet(scapy.UDP, '10.0.0.1', get_ip(i, offset=20),
+                                dst_port=i, vlan_tci=v)]
+        new_flow = {
+            'name': f'flow_{i:d}',
+            'id': i,
+            'path': [],
+            'flow': None,
+            'delay_slo':  max_delay,
+            'rate_slo': None,
+            'source_params': {
+                'rate_limit': {'packet': int(1e9)},
+                'weight': 1,
+                'templates': templates,
+                'ts_offset': settings.FLOW_TIMESTAMP_OFFSET,
+                'ts_offset_diff': -4,
+                },
+        }
+        flow_params.append(new_flow)
+
+fib = []
+for i in range(fib_size - len(flow_params)):
+    entry = {
+        'prefix': get_ip(i, offset=100),
+        'prefixlen': 24,
+        'ogate': i % nhop_num,
+    }
+    fib.append(entry)
+for flow in flow_params:
+    i = flow['id']
+    entry = {
+        'prefix': get_ip(i, offset=20),
+        'prefixlen': 24,
+        'ogate': i % nhop_num,
+    }
+    fib.append(entry)
+
+
+# Step 1: create workers
+workers = []
+workers.append(batchy.add_worker('w0'))
+
+# Step 2: add task to worker
+t0 = workers[0].add_task('task0', type=mode)
+tasks = [t0]
+for vl_id in range(vlan_num):
+    w_id = vl_id + 1
+    workers.append(batchy.add_worker(f'w{w_id}'))
+    new_task = workers[-1].add_task(f"task{w_id}", type=mode)
+    tasks.append(new_task)
+## add task to egress
+#tasks.append(workers[-1].add_task(f'task{len(tasks)}', type=mode))
+
+# Step 3: add modules to task, set internal pipeline
+em_t0 = 1  # 117.8135
+em_t1 = 1  # 19.1694
+
+ip_t0 = 100  # 214.683
+ip_t1 = 20   # 40.1546
+
+vs_t0 = 1
+vs_t1 = 1
+
+if acl_module == 'ACL':
+    acl_t0 = 1  # 380.9193
+    acl_t1 = 1  # 1008.9017
+else:
+    acl_t0 = 100  # 195.776
+    acl_t1 = 15   # 33.087
+
+
+type_check = t0.add_module(ExactMatch(name='type_check',
+                                      fields=[{'offset': 12, 'num_bytes': 2}]),
+                           type='ingress')
+type_check.module.add(fields=[{'value_bin': struct.pack("!H", 0x8100)}],
+                      gate=0)
+
+vlan_split = t0.add_module(VLANSplit(name='VLAN_SPLIT'),
+                           T_0=vs_t0, T_1=vs_t1)
+type_check.connect(vlan_split)
+
+
+# NB: some extra processing is required to overcome some limitations
+# of batchy and bess. These are:
+# 2) split + add bypass: to connect the batchy flows
+# merge_split = tasks[-1].add_module(ExactMatch(name='merge_splitter',
+#                                               fields=[
+#                                                   {'offset': 36, 'num_bytes': 2}, # dst port
+#                                               ]),
+#                                    type='ingress')
+
+acl_rules = [{'src_ip': '0.0.0.0/0',
+              'dst_ip': '0.0.0.0/0',
+              'ipproto': 17,
+              'drop': False}] + gen_acl_rules(acl_size - 1)
+
+for vn in range(vlan_num):
+    vtask = tasks[vn+1]
+    vlan_pop = vtask.add_module(VLANPop(name=f'vlan_pop_{vn}'), type='ingress')
+    vlan_split.connect(vlan_pop, ogate=vn)
+
+    l3 = vtask.add_module(IPLookup(name=f'L3_{vn}', max_rules=fib_size),
+                       T_0=ip_t0, T_1=ip_t1)
+    for entry in fib:
+        l3.module.add(prefix=entry['prefix'],
+                      prefix_len=entry['prefixlen'],
+                      gate=entry['ogate'])
+    vlan_pop.connect(l3)
+
+    for n in range(nhop_num):
+        fid = vn * nhop_num + n
+        ttl = vtask.add_module(UpdateTTL(name=f'update_ttl_{fid}'))
+        fid_mod = fid % 256
+        src_mac = mac_from_str(f'aa:bb:bb:aa:{fid_mod:02x}:dc', mode='int')
+        dst_mac = mac_from_str(f'ee:dd:dd:aa:01:{fid_mod:02x}', mode='int')
+        mac = vtask.add_module(Update(name=f'update_mac_{fid}',
+                                      fields=[{'offset': 6, 'size': 6,
+                                               'value': src_mac},
+                                              {'offset': 0, 'size': 6,
+                                               'value': dst_mac}]))
+        chk = vtask.add_module(IPChecksum(name=f'ip_checksum_{fid}'))
+        acl = vtask.add_module(acl_module(name=f'DMZ_ACL_{fid}', rules=acl_rules),
+                               T_0=acl_t0, T_1=acl_t1)
+        l3.connect(ttl, ogate=n)
+        ttl.connect(mac)
+        mac.connect(chk)
+        chk.connect(acl)
+        # acl.connect(merge_split)
+        flow_params[fid]['path'] = [vlan_pop, l3, ttl, mac, chk, acl]
+
+# for flow in flow_params:
+#     merge_split.module.add(fields=[{'value_bin': struct.pack('!H', flow['id'])}],
+#                            gate=flow['id'])
+#     bp = t0.add_module(Bypass(name=f'bypass_{flow["name"]}'))
+#     merge_split.connect(bp, ogate=flow['id'])
+#     flow['path'].extend([merge_split, bp])
+
+# Step 4: add flows:
+for idx, flow_param in enumerate(flow_params):
+    l3_mod_name = next((e.name for e in flow_param['path'] if "L3_" in e.name), "")
+    vtask_id = int(l3_mod_name.split('_')[-1]) + 1
+    flow_path = [
+        {
+            'task': t0,
+            'path': [type_check, vlan_split],
+            #'delay_bound':  10_000,
+        },
+        {
+            'task': tasks[vtask_id],
+            'path': flow_param['path'], #[:-2],
+            #'delay_bound':  10_000,
+        },
+        # {
+        #     'task': tasks[-1],
+        #     'path': flow_param['path'][-2:],  # merge_split and bp
+        #     #'delay_bound':  10_000,
+        # },
+    ]
+    new_flow = batchy.add_flow(name=flow_param['name'],
+                               path=flow_path,
+                               delay_slo=flow_param['delay_slo'],
+                               rate_slo=flow_param['rate_slo'],
+                               source_params=flow_param['source_params'],
+                               leader_task=t0)
+    flow_param['flow'] = new_flow
+
+# Step 5: add test traffic
+for i in range(src_worker_num):
+    src_worker_name = f'src_{i:d}'
+    src_worker = batchy.add_worker(src_worker_name)
+    batchy.add_bulk_source(batchy.flows, src_worker, burst_size=burst_size)
+batchy.add_sink()
+
+# Step 6: set controller for worker
+for t in tasks:
+    t.set_controller(batchy.resolve_task_controller(controller))
+batchy.set_controller('DecompMainController')
+batchy.controller.set_control_mode(control_mode)
+
+# Step 7: run pipeline
+batchy.run(rounds, control_period)
+
+basename = f'multitask-l3vrf'
+batchy.dump(f'/tmp/{basename}.txt')
+batchy.plot(f'/tmp/{basename}.png')
+
+if not no_reset:
+    bess.reset_all()

@@ -63,13 +63,13 @@ class Btree:
         #print("a:%s %s %s" % (ss, self.branches, self.pkts))
         if self.pkts <= pkts or self.branches <= 1:
             return [(self.depth, ss, self.pkts)]
-        #else:
-        r = []
-        if self.z:
-            r += (self.z.find(pkts, ss))
-        if self.o:
-            r += (self.o.find(pkts, ss))
-        return r
+        else:
+            r = []
+            if self.z:
+                r += (self.z.find(pkts, ss))
+            if self.o:
+                r += (self.o.find(pkts, ss))
+            return r
 
     def __repr__(self):
         self.print()

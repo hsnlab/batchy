@@ -16,7 +16,7 @@ Batchy comprises:
 
 Extensive experiments on networking use cases taken from an official 5G benchmark suite show that Batchy provides 2-3x the performance of prior work while accurately satisfying delay SLOs.
 
-For more information, please refer to the [NSDI20 paper](https://www.usenix.org/conference/nsdi20/presentation/l%C3%A9vai).
+For more information, please refer to the [NSDI20 paper](https://www.usenix.org/conference/nsdi20/presentation/levai).
 
 ## Installation
 

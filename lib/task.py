@@ -28,6 +28,8 @@ from . import utils
 
 
 class Task:
+    """ Represents a Batchy task """
+
     def __init__(self, batchy, worker, name='', queue=None, weight=1,
                  queue_size=None, backpressure=None):
         self.batchy = batchy
@@ -44,7 +46,6 @@ class Task:
         self.sink = None
         self.tc_name = None
         self.stat = []
-        self.gradient = []
         self.controller = None
         self.last_info = {'timestamp': time.time(),
                           'count': 0, 'pkts': 0, 'cycles': 0}
@@ -74,10 +75,12 @@ class Task:
 
     def create_module(self, mod, task, T_0=0, T_1=0, id=-1,
                       type='internal', controlled=None):
+        """ Create a new task module. Implemented by derived classes """
         raise NotImplementedError
 
     def add_module(self, mod, T_0=0, T_1=0, type='internal', controlled=None,
                    prev_mod=None):
+        """ Add a module to task """
         if isinstance(mod, module.Module):
             m = mod
         else:
@@ -118,10 +121,16 @@ class Task:
         return m
 
     def remove_module(self, mod, disconnect=True):
+        """ Remove a task module.
+
+            Arguments:
+            disconnect (bool): If true, disconnect module input
+        """
         try:
             self.modules.remove(mod)
-        except ValueError:
-            raise Exception(f'Task "{self.name}" has no module "{mod.name}"')
+        except ValueError as val_err:
+            txt = f'Task "{self.name}" has no module "{mod.name}"'
+            raise Exception(txt) from val_err
         if mod.is_controlled:
             self.cmodules.remove(mod)
 
@@ -140,43 +149,53 @@ class Task:
         if disconnect:
             mod.disconnect_in()
 
-
     def get_module(self, module_id):
+        """ Get task module by its id """
         return next((m for m in self.modules if m.id == module_id), None)
 
     def get_cmodule(self, module_id):
+        """ Get controlled task module by its id """
         return next((m for m in self.cmodules if m.id == module_id), None)
 
     def add_sink(self):
+        """ Create BESS Sink for the task """
         if self.sink is None:
             sink = utils.create_bess_module(self.bess, 'Sink')
             self.sink = self.add_module(sink, type='bess')
 
     def add_tflow(self, parent, path):
+        """ Add and assign taskflow to the task """
         new_tflow = tflow.TaskFlow(path, parent.D, id=len(self.tflows))
         self.tflows.append(new_tflow)
         return new_tflow
 
+    def is_leader(self):
+        """ Check if task is a leader for any flow """
+        return any(flow.leader_task == self for flow in self.get_flows())
+
     def is_rate_limited(self):
-        ''' Check whether all flows traversing task are rate limited
+        """ Check whether all flows traversing task are rate limited
 
         Returns:
         True if all traversing flows are rate-limited
 
-        '''
+        """
         if any(f.traverses_task(self) and not f.is_rate_limited()
                for f in self.batchy.flows):
             return False
         return True
 
     def get_flows(self):
+        """ Collect flows traversing the task """
         return [f for f in self.batchy.flows if f.traverses_task(self)]
 
     def get_slo_flows(self):
+        """ Collect SLO flows traversing the task """
         return [f for f in self.batchy.flows
                 if f.traverses_task(self) and f.has_slo()]
 
     def has_slo(self):
+        """ Check if any flow traversing the task has an SLO """
         return any(self.get_slo_flows())
 
     def get_ratelimit(self):
@@ -191,41 +210,44 @@ class Task:
         return utils.default_rate_slo()
 
     def set_controller(self, cclass, *args, **kwargs):
-        logging.log(logging.DEBUG, f'set_controller: setting controller '
-                    f'for task "{self.name}" to "{cclass}"')
-        ctrl_class = getattr(tcontroller, cclass)
-        ctrlr = ctrl_class(self, *args, **kwargs)
+        """ Set task controller """
+        logging.log(logging.DEBUG,
+                    'set_controller: setting controller for task "%s" to "%s"',
+                    self.name, cclass)
+        ctrlr = tcontroller.get_tcontroller(self, cclass)
         return ctrlr
 
     def reset(self, meas=None):
+        """ Reset task statistics """
         if meas is None:
             for mod in self.modules:
                 mod.reset()
             meas = self.bess.get_tc_stats(self.tc_name)
         self.last_info = {'timestamp': meas.timestamp,
-                          'count': meas.count,
+                          'count': meas.nonidle_count,
                           'pkts': meas.packets,
-                          'cycles': meas.cycles}
+                          'cycles': meas.nonidle_cycles}
 
     def erase_stat(self):
+        """ Clear task and module statistics """
         for mod in self.modules:
             mod.erase_stat()
         self.stat = []
 
     def get_stat(self):
-        '''Collect task statistics from the corresponding BESS traffic class
+        """Collect task statistics from the corresponding BESS traffic class
            and task modules.
 
            Appends the collected statistics (dict) to self.stat.
 
-        '''
+        """
         m = self.bess.get_tc_stats(self.tc_name)
         diff_ts = m.timestamp - self.last_info['timestamp']
         s = defaultdict(lambda: 0.0)
 
-        s['batch'] = m.count - self.last_info['count']
+        s['batch'] = m.nonidle_count - self.last_info['count']
         s['pkts'] = m.packets - self.last_info['pkts']
-        s['cycles'] = m.cycles - self.last_info['cycles']
+        s['cycles'] = m.nonidle_cycles - self.last_info['cycles']
 
         s['x_0'] = s['batch'] / diff_ts
         if s['batch'] > 0:
@@ -245,7 +267,8 @@ class Task:
         # then the module stat
         self.get_module_stat(s)
 
-        s['t_0_estimate'] = sum([m.stat[-1]['t_m_estimate'] for m in self.modules])
+        # use average stats for estimation
+        s['t_0_estimate'] = m.nonidle_count / m.nonidle_cycles
 
         # NB: The task statistics (task.cnt) contain the times when the
         # task was scheduled but no packets were found on the input so the
@@ -274,6 +297,7 @@ class Task:
         self.reset(m)
 
     def format_stat(self):
+        """ Format statistics riport """
         last_stat = pprint.pformat(dict(self.stat[-1]), indent=4, width=1)
         return f'Task {self.name}:\n{last_stat}'
 
@@ -285,30 +309,32 @@ class Task:
 
 
 class RTCTask(Task):
-    ''' Task (self-)scheduled in run-to-completion mode '''
+    """ Task (self-)scheduled in run-to-completion mode """
 
     def __init__(self, batchy, worker, name='', queue=None, weight=1,
                  queue_size=None, backpressure=None):
-        super(RTCTask, self).__init__(batchy, worker, name, queue, weight,
-                                      queue_size, backpressure)
+        super().__init__(batchy, worker, name, queue, weight,
+                         queue_size, backpressure)
         self.type = 'RTC'
 
     def create_module(self, mod, task, T_0=0, T_1=0, id=-1,
                       type='internal', controlled=None):
+        """ Create an RTC module """
         return module.RTCModule(mod, task, T_0, T_1, id,
                                 type=type, controlled=controlled)
 
 
 class WFQTask(Task):
-    ''' Task scheduled in weighted-fair-queuing mode '''
+    """ Task scheduled in weighted-fair-queuing mode """
 
     def __init__(self, batchy, worker, name='', queue=None, weight=1,
                  queue_size=None, backpressure=None):
-        super(WFQTask, self).__init__(batchy, worker, name, queue, weight,
-                                      queue_size, backpressure)
+        super().__init__(batchy, worker, name, queue, weight,
+                         queue_size, backpressure)
         self.type = 'WFQ'
 
     def create_module(self, mod, task, T_0=0, T_1=0, id=-1,
                       type='internal', controlled=None):
+        """ Create a WFQ module """
         return module.WFQModule(mod, task, T_0, T_1, id,
                                 type=type, controlled=controlled)

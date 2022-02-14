@@ -26,7 +26,7 @@ creators = None
 
 
 class Singleton(type):
-    # https://stackoverflow.com/q/6760685
+    """ Singleton class based on https://stackoverflow.com/q/6760685 """
     _instances = {}
 
     def __call__(cls, *args, **kwargs):
@@ -37,6 +37,7 @@ class Singleton(type):
 
 
 def get_local_bess_handle(bessdir):
+    """ Import pybess and instantiate a pybess.BESS module """
     try:
         sys.path.insert(1, bessdir)
         global BESS
@@ -104,6 +105,7 @@ def get_bess_module_and_port_creators(bess):
 
 
 def get_t0t1_values(module_class, profiler_file=None):
+    """ Read T_0 and T_1 values from module profiling data """
     profiler_file = profiler_file or settings.PROFILER_FILE
     filtered_modules = ('Source', 'Sink', 'Measure', 'Timestamp', 'Rewrite')
     if module_class in filtered_modules:
@@ -112,6 +114,7 @@ def get_t0t1_values(module_class, profiler_file=None):
 
 
 def _get_t0t1_values_from_json(module_class, profiler_file):
+    """ Helper function to parse module profiling data """
     t_0 = settings.DEFAULT_T0
     t_1 = settings.DEFAULT_T1
     try:
@@ -131,6 +134,7 @@ def _get_t0t1_values_from_json(module_class, profiler_file):
 
 
 def check_ratelimit(rate_limit):
+    """ Validate rate limit """
     if rate_limit is None:
         return rate_limit
     if not isinstance(rate_limit, dict):
@@ -154,8 +158,9 @@ def check_ratelimit(rate_limit):
                  f'resource limit "{resource}"={limit:.3f} ignored'))
     return None
 
+
 def get_ratelimit_for_flows(flows):
-    ''' Calc sum rate of flows. Mixed limits are not supported: all flows are
+    """ Calc sum rate of flows. Mixed limits are not supported: all flows are
         handled either as 'packet' or ar 'bit' rate-limited depending on
         the rate dimension of the first flow's rate-limit.
 
@@ -165,7 +170,7 @@ def get_ratelimit_for_flows(flows):
         Returns:
         a {rate dimension (str): sum rate (int)} dict
 
-    '''
+    """
     rate_dim = None
     sum_rate = 0
     for flow in flows:
@@ -179,7 +184,7 @@ def get_ratelimit_for_flows(flows):
             return default_rate_slo()
         if rate_resource != rate_dim:
             logging.log(logging.WARNING,
-                        f'Invalid rate-limit on flow set: some flows rate-limit ' \
+                        f'Invalid rate-limit on flow set: some flows rate-limit '
                         f'dimensions differ, falling back to default rate-limit')
             return default_rate_slo()
         sum_rate += rate_value
@@ -199,10 +204,12 @@ def get_rate_slo_value(flow):
 
 
 def default_delay_slo():
+    """ Get default delay SLO """
     return settings.DEFAULT_DELAY_BOUND
 
 
 def default_rate_slo():
+    """ Get default rate SLO """
     return {settings.DEFAULT_RATE_LIMIT_RESOURCE:
             settings.DEFAULT_RATE_LIMIT}
 
@@ -214,6 +221,7 @@ def filter_obj_list(object_list, obj_attrib, filtered_words):
 
 
 def format_sum_rate(sum_rate, unit='pps'):
+    """ Format rates with SI prefixes: mega, kilo, or none"""
     if sum_rate > 1_000_000:
         return f'{sum_rate / 1e6} M{unit}'
     if sum_rate > 1_000:

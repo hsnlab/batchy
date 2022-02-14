@@ -61,7 +61,7 @@ class Batchy(metaclass=utils.Singleton):
         self.workers.clear()
         self.__init__(self.bess)
 
-    def add_worker(self, name=None, wid=None):
+    def add_worker(self, name=None, wid=None, core=None):
         if wid is None:
             wid = len(self.workers)
         if name is None:
@@ -69,7 +69,7 @@ class Batchy(metaclass=utils.Singleton):
         if self.get_worker(name) is not None:
             raise Exception(f'add_worker: worker "{name}" already exists')
 
-        new_worker = worker.Worker(self, name, wid)
+        new_worker = worker.Worker(self, name, wid, core)
         self.workers.append(new_worker)
 
         return new_worker
@@ -101,8 +101,7 @@ class Batchy(metaclass=utils.Singleton):
         for i in range(1, settings.BATCH_SIZE):
             controllers[f'fix{i}'] = f'Fix{i}'
         try:
-            controller = f'{controllers[name]}TaskController'
-            return controller
+            return controllers[name]
         except KeyError:
             raise Exception(f'Unknown task controller: "{name}"') from None
 
@@ -118,8 +117,8 @@ class Batchy(metaclass=utils.Singleton):
                        'normgreedy': 'NormalizedGreedy',
                        'normalizedgreedy': 'NormalizedGreedy'}
         try:
-            controller = f'{controllers[name]}Controller'
-            return controller
+            _controller = f'{controllers[name]}Controller'
+            return _controller
         except KeyError:
             raise Exception(f'Unknown controller: "{name}"') from None
 
@@ -132,7 +131,8 @@ class Batchy(metaclass=utils.Singleton):
         return ctrlr
 
     def add_flow(self, path, name=None, delay_slo=None, rate_slo=None,
-                 source_params=None, id=None):
+                 source_params=None, id=None, leader_task=None):
+        """ Add a new flow """
         if id is None:
             id = len(self.flows)
         name = name or f'flow{id:d}'
@@ -141,7 +141,8 @@ class Batchy(metaclass=utils.Singleton):
 
         new_flow = flow.Flow(self.bess, path=path, name=name,
                              delay_slo=delay_slo, rate_slo=rate_slo,
-                             source_params=source_params, id=id)
+                             source_params=source_params, id=id,
+                             leader_task=leader_task)
         self.flows.append(new_flow)
         # if new_flow.has_slo():
         for path_segment in new_flow.path:
@@ -225,9 +226,9 @@ class Batchy(metaclass=utils.Singleton):
         return self.create_bess_module('PortInc', {'port': in_port})
 
     def add_source(self, worker=None, ts_offset=None):
-        ''' Add a multi-source for QoS flows and another multi-source for bulk
+        """ Add a multi-source for QoS flows and another multi-source for bulk
             flows
-        '''
+        """
         if worker is None:
             worker = self.add_worker()
         qos_flows, bulk_flows = [], []
@@ -298,14 +299,14 @@ class Batchy(metaclass=utils.Singleton):
 
     def add_multi_source(self, flows, worker=None, burst_size=None,
                          postfix=None, ts_offset=None, qos=False):
-        ''' Add multi source by the following invariants:
+        """ Add multi source by the following invariants:
 
             INVARIANT 1: either all flows have templates or none of them, we do
                          not support mixed setups
 
             INVARIANT 2: all flows with a common multi-source share ingress
 
-        '''
+        """
 
         postfix = f'_{postfix}' if postfix else ''
         worker = worker or self.add_worker()
@@ -322,9 +323,9 @@ class Batchy(metaclass=utils.Singleton):
         have_template = len([f for f in flows
                              if f.source_params['templates'] is not None])
         if not (have_template == 0 or have_template == len(flows)):
-            text = f'add_multi_source: invariant failed, number of ' \
-                   'flows with template ({have_template}) != number of ' \
-                   'all flows ({len(flows)}), ' \
+            text = 'add_multi_source: invariant failed, number of ' \
+                   f'flows with template ({have_template}) != number of ' \
+                   f'all flows ({len(flows)}), ' \
                    'nor number of bulk flows with template == 0'
             logging.log(logging.ERROR, text)
             raise Exception(text)
@@ -387,7 +388,7 @@ class Batchy(metaclass=utils.Singleton):
                                    weight=len(flows), is_qos=qos)
 
     def add_sink(self):
-        ''' Connects all flow egresses into a common sink through a measure '''
+        """ Connects all flow egresses into a common sink through a measure """
         for f in self.flows:
             f.add_sink()
 
@@ -470,17 +471,20 @@ class Batchy(metaclass=utils.Singleton):
 
     @staticmethod
     def get_stat_task(t):
+        """ Query task statistics """
         t.get_stat()
         if logging.getLogger().isEnabledFor(logging.DEBUG):
             logging.log(logging.DEBUG, t.format_stat())
 
     def get_flow_stat(self):
+        """ Query flow statistics """
         for f in self.flows:
             f.get_stat()
             if logging.getLogger().isEnabledFor(logging.DEBUG):
                 logging.log(logging.DEBUG, f.format_stat())
 
     def erase_stat(self):
+        """ Clear statistics """
         self.round = 0
         self.stat = []
         for w in self.workers:
@@ -490,10 +494,12 @@ class Batchy(metaclass=utils.Singleton):
         self.reset()
 
     def get_cumulative_flow_rate(self, t=-1):
+        """ Calculate cumulative flow rates """
         return sum([f.stat[t]['pps'] for f in self.flows if f.stat])
 
     @staticmethod
     def _import_matplotlib():
+        """ Helper function to import matplotlib package """
         plt = None
         try:
             logging.getLogger('matplotlib').setLevel(logging.WARNING)
@@ -503,19 +509,62 @@ class Batchy(metaclass=utils.Singleton):
             logging.log(logging.ERROR, txt)
         return plt
 
+    def collect_gradients(self, store=True):
+        """ Collect gradients, and optionally store in self.stat.
+
+            Paramaters:
+            store (bool): store gradients in self.stat; default: True
+
+            Returns:
+            gradients (dict): list of gradients indexed by task name
+            and flow name
+        """
+        # collect all gradients
+        gradients = {}
+        if self.controller \
+           and self.controller.stat \
+           and 'gradients' in self.controller.stat[-1]:
+            _stats = self.controller.stat
+            for f in self.flows:
+                followers = [tf for tf in f.get_tflows()
+                             if tf.task != f.leader_task]
+                for tf in followers:
+                    # rounds = [n*settings.DEFAULT_TASK_CONTROL_ROUNDS
+                    #           for n in range(len(_stats)+1)]
+                    values = [0.0] + [s['gradients'][f.name][0]
+                                      for s in _stats]
+                    gradients[f'gradient_{tf.task.name}_{f.name}'] = values
+        if store:
+            # register gradients to self.stat
+            for ts, stat in enumerate(self.stat):
+                idx = ts // settings.DEFAULT_TASK_CONTROL_ROUNDS
+                _grads = {name: tf_grads[idx]
+                          for name, tf_grads in gradients.items()}
+                stat.update(_grads)
+        return gradients
+
     def plot(self, filename, modules=None, flows=None):
-        ''' Plot statistics.
+        """ Plot statistics.
 
             Parameters:
             filename (str): Output PNG filename
             modules (list): List of modules to plot. If not set: plot all.
             flows (list): List of flows to plot. If not set: plot all.
 
-        '''
-
+        """
         plt = self._import_matplotlib()
         if plt is None:
             return
+        plt.style.use('seaborn-colorblind')
+        size = 12.5
+        params = {'legend.fontsize': size,
+                  'axes.labelsize': size,
+                  'axes.titlesize': size,
+                  'figure.titlesize': size*1.5,
+                  'xtick.labelsize': size,
+                  'ytick.labelsize': size,
+                  'axes.titlepad': size*0.75}
+        plt.rcParams.update(params)
         plt.switch_backend('Agg')
         logging.log(logging.INFO,
                     f'plot: plotting statistics to file: "{filename}"')
@@ -523,71 +572,115 @@ class Batchy(metaclass=utils.Singleton):
         modules = modules or [m for w in self.workers
                               for t in w.tasks for m in t.cmodules]
         flows = flows or self.flows
-
         plt.figure(1)
-        _, (ax1, ax2, ax3) = plt.subplots(3, 1, sharex=True,
-                                          figsize=(12, 10))
-
+        _, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, sharex=True,
+                                               figsize=(15, 14))
         t = None
+
         # modules: control
-        for i, m in enumerate(modules):
+        for i, m in enumerate(modules, start=5):
             if not m.is_controlled or m.task.controller is None:
                 continue
             t = t or range(len(m.stat))
             if len(m.stat) != len(t):
-                raise Exception(f'plot: stats size mismatch:'
+                raise Exception('plot: stats size mismatch:'
                                 f'{len(t)} <> {len(m.stat)}')
-            ax1.plot(t, [m.task.controller.get_control_at(m, x)
-                         for x in range(len(m.stat))],
-                     marker=i % 11, label=f'control: {m.module.name}')
+            ax1.plot(t,
+                     [m.task.controller.get_control_at(m, x)
+                      for x in range(len(m.stat))],
+                     marker='d',
+                     label=f'{m.module.name}')
 
-        ax1.set_title('control')
-        ax1.set_xlabel('time [round]')
-        ax1.set_ylabel('control')
+        ax1.set_title('Module Controls')
+        ax1.set_ylabel('Control')
 
-        # delay
+        # delay 1/2: tflows
         for i, f in enumerate(flows):
+            for tf in f.get_tflows():
+                color = next(ax2._get_lines.prop_cycler)['color']
+                t = t or range(len(tf.stat))
+                if len(tf.stat) != len(t):
+                    raise Exception('plot: stats size mismatch:'
+                                    f'{len(t)} <> {len(tf.stat)}')
+                ax2.plot(t,
+                         [s['delay_bound'] for s in tf.stat],
+                         marker='*',
+                         color=color,
+                         label=f'{tf.get_name()} (bound)')
+                ax2.plot(t,
+                         [s['tf_estimate'] for s in tf.stat],
+                         marker='H',
+                         color=color,
+                         label=f'{tf.get_name()} (estimate)')
+
+        # delay 2/2: flows
+        for i, f in enumerate(flows):
+            color = next(ax2._get_lines.prop_cycler)['color']
             t = t or range(len(f.stat))
-            if len(f.stat) != len(t):
-                raise Exception(f'plot: stats size mismatch:'
-                                f'{len(t)} <> {len(f.stat)}')
-            ax2.plot(t, [s[f'latency_{settings.DELAY_MAX_PERC}']
-                         for s in f.stat],
-                     marker=i % 11, label=f'Delay: flow {f.name}')
-            ax2.plot(t, [s['t_f_estimate'] for s in f.stat],
-                     marker=i % 11, label=f'Delay_estimate: flow {f.name}')
-        ax2.set_title('flows: delay')
-        ax2.set_xlabel('time [round]')
-        ax2.set_ylabel('nsec')
+            # if len(f.stat) != len(t):
+            #     raise Exception('plot: stats size mismatch:'
+            #                     f'{len(t)} <> {len(f.stat)}')
+            ax2.plot(t,
+                     [s[f'latency_{settings.DELAY_MAX_PERC}'] for s in f.stat],
+                     marker=i % 11,
+                     color=color,
+                     label=f'{f.name}')
+            ax2.plot(t,
+                     [s['t_f_estimate'] for s in f.stat],
+                     marker='s',
+                     color=color,
+                     label=f'{f.name} (estimate)')
+
+        ax2.set_title('Flows: Delay')
+        ax2.set_ylabel('Delay [nsec]')
+
+        # gradients
+        if self.controller \
+           and self.controller.stat \
+           and 'gradients' in self.controller.stat[-1]:
+            _stats = self.controller.stat
+            for f in flows:
+                color = next(ax2._get_lines.prop_cycler)['color']
+                followers = [tf for tf in f.get_tflows()
+                             if tf.task != f.leader_task]
+                for i, tf in enumerate(followers):
+                    ax3.plot([n*settings.DEFAULT_TASK_CONTROL_ROUNDS
+                              for n in range(len(_stats)+1)],
+                             [0.0] + [s['gradients'][f.name][0]
+                                      for s in _stats],
+                             marker='^',
+                             color=color,
+                             label=f'({tf.task.name}, {f.name})')
+        ax3.set_title('(Task,Flow) Gradients')
+        ax3.set_ylabel('')
 
         # rate
         for i, f in enumerate(flows):
             t = t or range(len(f.stat))
             if len(f.stat) != len(t):
-                raise Exception(f'plot: stats size mismatch:'
+                raise Exception('plot: stats size mismatch:'
                                 f'{len(t)} <> {len(f.stat)}')
-            ax3.plot(t, [s['pps'] for s in f.stat],
-                     marker=i % 11, label=f'rate: flow {f.name} [pps]')
+            ax4.plot(t, [s['pps'] for s in f.stat],
+                     marker=i % 11, label=f'{f.name}')
 
         if t is not None:
-            ax3.plot(t, [s['sum_fpps'] for s in self.stat],
-                     marker='>', label='total rate [pps]')
+            ax4.plot(t, [s['sum_fpps'] for s in self.stat],
+                     marker='>', label='Total Rate')
 
-        for a in (ax1, ax2, ax3):
-            a.legend(ncol=2,
+        ax4.set_title('Flows: Packet Rate')
+        ax4.set_ylabel('Rate [pps]')
+
+        for a in (ax1, ax2, ax3, ax4):
+            num_legend_cols = min(max(len(a.lines) // 8, 1), 3)
+            a.legend(ncol=num_legend_cols,
                      loc="center left",
-                     bbox_to_anchor=(1, .5),
-                     prop={'size': 7})
+                     bbox_to_anchor=(1, .5))
 
-        ax3.set_title('flows: packet rate')
-        ax3.set_xlabel('time [round]')
-        ax3.set_ylabel('pps')
-
-        plt.subplots_adjust(left=.07, right=.57, top=.96, bottom=.06)
+        plt.subplots_adjust(left=.07, right=.57, top=.95, bottom=.05)
         plt.savefig(filename, dpi=150)
 
     def dump(self, filename, modules=None, flows=None, tasks=None):
-        ''' Dump statistics to tsv
+        """ Dump statistics to tsv
 
             Parameters:
             filename (str): Output filename
@@ -595,7 +688,7 @@ class Batchy(metaclass=utils.Singleton):
             flows (list): List of flows to dump. If not set: dump all.
             tasks (list): List of tasks to dump. If not set: dump all.
 
-        '''
+        """
 
         logging.log(logging.INFO,
                     f'dump: dumping statistics to CSV file: "{filename}"')
@@ -605,8 +698,14 @@ class Batchy(metaclass=utils.Singleton):
         flows = flows or self.flows
         tasks = tasks or [t for w in self.workers for t in w.tasks]
 
+        self.collect_gradients(store=True)
+        gradient_keys = [key for key in self.stat[0] if "gradient_" in key]
+
         with open(filename, mode='w') as csv_file:
-            csv_writer = csv.writer(csv_file, delimiter='\t', quotechar='"',
+            csv_writer = csv.writer(csv_file,
+                                    delimiter='\t',
+                                    lineterminator='\n',
+                                    quotechar='"',
                                     quoting=csv.QUOTE_MINIMAL)
             for t in range(self.round - 1):
                 row = {'t': t}
@@ -614,7 +713,8 @@ class Batchy(metaclass=utils.Singleton):
                 for m in modules:
                     if not m.is_controlled or m.task.controller is None:
                         continue
-                    row[f'{m.name}:control'] = m.task.controller.get_control_at(m, t)
+                    val = m.task.controller.get_control_at(m, t)
+                    row[f'{m.name}:control'] = val
                     for s in ('x_v', 'R_v', 'b_v', 'b_in'):
                         row[f'{m.name}:{s}'] = m.stat[t][s]
 
@@ -624,6 +724,11 @@ class Batchy(metaclass=utils.Singleton):
                     row[f'{f.name}:delay_estimate'] = f.stat[t]['t_f_estimate']
                 for f in flows:
                     row[f'{f.name}:pps'] = f.stat[t]['pps']
+                for f in flows:
+                    for tf in f.get_tflows():
+                        row[f'{tf.get_name()}:delay_bound'] = tf.stat[t]['delay_bound']
+                        row[f'{tf.get_name()}:estimate'] = tf.stat[t]['tf_estimate']
+
 
                 for task in tasks:
                     if task.controller is None:
@@ -634,10 +739,14 @@ class Batchy(metaclass=utils.Singleton):
                     row[f'{task.name}:b_0'] = task.stat[t]['b_in']
                     row[f'{task.name}:cyc_per_packet'] = task.stat[t]['cyc_per_packet']
 
+                # gradients
+                row.update({key: self.stat[t][key] for key in gradient_keys})
+
                 row['sum_fpps'] = self.stat[t]['sum_fpps']
                 row['ctrlr_deadtime'] = self.stat[t]['controller_deadtime']
 
                 if t == 0:
                     # print header
                     csv_writer.writerow(k for k in row)
+
                 csv_writer.writerow([v for k, v in row.items()])

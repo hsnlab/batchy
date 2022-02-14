@@ -21,7 +21,7 @@ import socket
 import struct
 
 
-class PipelineBase(object):
+class PipelineBase:
     def __init__(self, *args, **kwargs):
         self.__dict__.update(kwargs)
         globals().update(vars(self))
